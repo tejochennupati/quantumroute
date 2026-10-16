@@ -19,11 +19,35 @@ body {
     font-family: 'JetBrains Mono', monospace;
     background-color: var(--bg-dark);
     color: #e2e8f0;
-    user-select: none;
 }
 
 .font-hud {
     font-family: 'Orbitron', 'JetBrains Mono', monospace;
+}
+
+/* AUTHENTICATION & LANDING SCREEN BACKGROUND */
+.auth-bg {
+    background-color: #010409;
+    background-image: radial-gradient(circle at 50% 50%, rgba(0, 240, 255, 0.08) 0%, transparent 70%);
+}
+
+/* COMMAND HEADER */
+.command-header {
+    background: linear-gradient(90deg, #0d1117 0%, #161b22 100%);
+    border-bottom: 2px solid #00f0ff;
+}
+
+/* GLASS CARD STYLING */
+.glass-card {
+    background: rgba(13, 17, 23, 0.88);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(0, 240, 255, 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+    border-color: rgba(0, 240, 255, 0.7);
+    box-shadow: 0 0 30px rgba(0, 240, 255, 0.25);
 }
 
 /* SIDEBAR TRANSITIONS */
@@ -31,7 +55,15 @@ body {
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ELITE HOVER ZOOM & GLOW */
+#officer-sidebar, #driver-sidebar, #expanded-driver-sidebar {
+    z-index: 9999 !important;
+}
+
+#officer-sidebar-overlay, #driver-sidebar-overlay, #expanded-sidebar-overlay {
+    z-index: 9988 !important;
+}
+
+/* ELITE HOVER ZOOM & GLOW FOR TACTICAL GRID CARDS */
 .map-card {
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     transform-origin: center;
@@ -75,7 +107,7 @@ body {
     animation: emergencyBlink 0.85s infinite !important;
 }
 
-/* MAP SIZING RULES FOR PERFECT 5x4 NO-SCROLL VIEW */
+/* MAP SIZING RULES */
 .driver-mini-map {
     width: 100% !important;
     height: 100% !important;
@@ -106,19 +138,6 @@ body {
 
 .leaflet-container {
     background-color: #010409 !important;
-}
-
-.auth-bg {
-    background-color: #010409;
-    background-image: radial-gradient(circle at 50% 50%, rgba(0, 240, 255, 0.08) 0%, transparent 70%);
-}
-
-#officer-sidebar, #driver-sidebar, #expanded-driver-sidebar {
-    z-index: 9999 !important;
-}
-
-#officer-sidebar-overlay, #driver-sidebar-overlay, #expanded-sidebar-overlay {
-    z-index: 9988 !important;
 }
 
 /* CUSTOM SCROLLBAR */
@@ -165,4 +184,273 @@ body {
     color: #94a3b8;
     border: 1px dashed rgba(148, 163, 184, 0.4);
 }
+
+/* ANIMATED VEHICLE RADAR BEACON */
+.vehicle-beacon-wrapper {
+    background: transparent;
+    border: none;
+}
+
+.vehicle-beacon-container {
+    position: relative;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.vehicle-beacon-pulse {
+    position: absolute;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: rgba(0, 240, 255, 0.35);
+    animation: beaconPulseAnim 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+.vehicle-beacon-dot {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #00f0ff;
+    box-shadow: 0 0 10px #00f0ff, 0 0 20px rgba(0, 240, 255, 0.9);
+    border: 2px solid #ffffff;
+    z-index: 2;
+}
+
+.vehicle-beacon-truck {
+    position: absolute;
+    top: -16px;
+    font-size: 15px;
+    filter: drop-shadow(0 0 5px rgba(0, 240, 255, 0.8));
+    z-index: 3;
+    pointer-events: none;
+    transform: translateY(0);
+    transition: transform 0.2s ease;
+}
+
+@keyframes beaconPulseAnim {
+    0% {
+        transform: scale(0.5);
+        opacity: 0.9;
+    }
+    100% {
+        transform: scale(2.4);
+        opacity: 0;
+    }
+}
+
+/* CUSTOM TACTICAL MAP POPUPS */
+.tactical-popup .leaflet-popup-content-wrapper {
+    background: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8);
+}
+
+.tactical-popup .leaflet-popup-tip {
+    background: #0d1117;
+}
+
+.tactical-popup .leaflet-popup-content {
+    margin: 10px 14px;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+/* NUMBERED SEQUENCE BADGES ABOVE DISASTER NODES */
+.node-sequence-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    cursor: pointer;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+.sequence-badge {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #00f0ff;
+    color: #010409;
+    font-size: 11px;
+    font-weight: 900;
+    font-family: 'Orbitron', 'JetBrains Mono', monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 12px rgba(0, 240, 255, 0.9), 0 2px 4px rgba(0, 0, 0, 0.6);
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sequence-badge:hover {
+    transform: scale(1.25);
+    box-shadow: 0 0 18px rgba(0, 240, 255, 1);
+}
+
+.sequence-badge-active {
+    background: #10b981;
+    color: #010409;
+    border-color: #ffffff;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.9);
+}
+
+.sequence-badge-hazard {
+    background: #ef4444;
+    color: #ffffff;
+    border-color: #ffffff;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.9);
+}
+
+.sequence-badge-storm {
+    background: #f59e0b;
+    color: #010409;
+    border-color: #ffffff;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.9);
+}
+
+.sequence-label {
+    margin-top: 2px;
+    padding: 1px 5px;
+    background: rgba(13, 17, 23, 0.92);
+    border: 1px solid rgba(0, 240, 255, 0.4);
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+}
+
+/* OFFICER TEXT LOCATION DISPATCH BAR */
+#officer-text-dispatch-bar {
+    background: linear-gradient(90deg, rgba(13, 17, 23, 0.95) 0%, rgba(22, 27, 34, 0.95) 100%);
+    border-bottom: 1px solid rgba(0, 240, 255, 0.25);
+    backdrop-filter: blur(12px);
+}
+
+#officer-text-dispatch-bar input:focus {
+    border-color: #00f0ff;
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+}
+
+/* REGISTRATION MODAL FORM STYLING */
+#driver-registration-modal input:focus,
+#driver-registration-modal select:focus {
+    border-color: #00f0ff;
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.25);
+}
+
+/* ========================================================
+   UNIQUE 10-DRIVER COLOR CODED TRACKING & LEGEND BAR (SPEC 3)
+   ======================================================== */
+.driver-legend-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding: 0.4rem 0.75rem;
+    background: rgba(13, 17, 23, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 0.75rem;
+    backdrop-filter: blur(12px);
+    white-space: nowrap;
+    scrollbar-width: none;
+}
+.driver-legend-bar::-webkit-scrollbar {
+    display: none;
+}
+
+.driver-legend-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.55rem;
+    background: #010409;
+    border: 1px solid #30363d;
+    border-radius: 0.5rem;
+    font-size: 10px;
+    font-weight: 700;
+    color: #e2e8f0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.driver-legend-pill:hover {
+    border-color: #00f0ff;
+    transform: translateY(-1px);
+}
+
+.driver-color-chip {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px currentColor;
+}
+
+/* INTERACTIVE ROUTE LINE ACTION POPUP (SPEC 4) */
+.route-popup-card {
+    padding: 0.25rem;
+    min-width: 175px;
+}
+
+.route-clear-btn {
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 0.5rem;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+}
+
+.route-clear-btn:hover {
+    background: #ef4444;
+    color: #ffffff;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
+}
+
+/* LEAFLET POPUP INTERACTIVE CONTROLS */
+.leaflet-popup-content {
+    margin: 8px 12px !important;
+    line-height: 1.4 !important;
+    pointer-events: auto !important;
+}
+
+.leaflet-popup-content-wrapper {
+    background: #0d1117 !important;
+    color: #f0f6fc !important;
+    border: 1px solid #30363d !important;
+    border-radius: 0.75rem !important;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8) !important;
+}
+
+.leaflet-popup-tip {
+    background: #0d1117 !important;
+    border: 1px solid #30363d !important;
+}
+
+button {
+    cursor: pointer;
+    user-select: none;
+}
+
+
 

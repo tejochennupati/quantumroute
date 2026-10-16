@@ -2,6 +2,7 @@
  * QUANTUMROUTE: QISKIT QUBO / QAOA ENGINE & LIVE QPU TELEMETRY SIMULATOR
  * Powers the Live QPU Telemetry Widget, Interactive QUBO Solver Terminal,
  * and Quantum Carbon & Distance Savings Meter.
+ * Road-snapping integration ensures land and bridge transit without cutting water.
  */
 
 class QuantumRoutingEngine {
@@ -20,6 +21,7 @@ class QuantumRoutingEngine {
      * Subtle quantum fluctuation simulation (fluctuates around -29.04 eV)
      */
     startFluctuationTicker() {
+        if (typeof window === 'undefined') return;
         setInterval(() => {
             const jitter = (Math.random() - 0.5) * 0.012;
             this.currentEnergy = Number((this.baseEnergy + jitter).toFixed(3));
@@ -33,39 +35,30 @@ class QuantumRoutingEngine {
     }
 
     /**
-     * Solve single route vector with quantum detour tunneling
+     * Solve single route vector with quantum detour tunneling & road snapping
      */
     solveOptimalRoute(startCoord, endCoord, isBlocked = false) {
         const [startLat, startLng] = startCoord;
         const [endLat, endLng] = endCoord;
 
-        const rawDistKm = Math.hypot(endLat - startLat, endLng - startLng) * 111;
+        // Use road-snapped path from config if available
         let path = [];
-        let detourFactor = 1.12;
-
-        if (!isBlocked) {
-            const midLat = Number(((startLat + endLat) / 2 + 0.0012).toFixed(6));
-            const midLng = Number(((startLng + endLng) / 2 - 0.0012).toFixed(6));
-            path = [
-                [startLat, startLng],
-                [midLat, midLng],
-                [endLat, endLng]
-            ];
+        if (typeof getRoadSnappedPath === 'function') {
+            path = getRoadSnappedPath([startLat, startLng], [endLat, endLng], isBlocked);
+        } else if (typeof window !== 'undefined' && typeof window.getRoadSnappedPath === 'function') {
+            path = window.getRoadSnappedPath([startLat, startLng], [endLat, endLng], isBlocked);
         } else {
-            detourFactor = 1.38;
-            const dLat1 = Number((startLat + (endLat - startLat) * 0.35 - 0.004).toFixed(6));
-            const dLng1 = Number((startLng + (endLng - startLng) * 0.35 + 0.005).toFixed(6));
-            const dLat2 = Number((startLat + (endLat - startLat) * 0.70 - 0.003).toFixed(6));
-            const dLng2 = Number((startLng + (endLng - startLng) * 0.70 + 0.006).toFixed(6));
-            path = [
-                [startLat, startLng],
-                [dLat1, dLng1],
-                [dLat2, dLng2],
-                [endLat, endLng]
-            ];
+            path = [[startLat, startLng], [endLat, endLng]];
         }
 
-        const distanceKm = Number((rawDistKm * detourFactor).toFixed(2));
+        // Calculate actual path distance in km
+        let pathDistKm = 0;
+        for (let i = 0; i < path.length - 1; i++) {
+            pathDistKm += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]) * 111;
+        }
+
+        const detourFactor = isBlocked ? 1.35 : 1.08;
+        const distanceKm = Number((Math.max(1.5, pathDistKm * detourFactor)).toFixed(2));
         const classicalFuelLiters = Number((distanceKm * 0.185).toFixed(2));
         const quantumFuelLiters = Number((distanceKm * 0.138).toFixed(2));
 
@@ -88,6 +81,134 @@ class QuantumRoutingEngine {
             activeQubits: this.activeQubits,
             gateFidelity: this.gateFidelity,
             algorithm: isBlocked ? 'Qiskit-QAOA-Tunneling-p4' : 'Qiskit-QAOA-GroundState-p4'
+        };
+    }
+
+    /**
+     * Solve multi-node sequential tour with dynamic weather coloring and ETA/Fuel metrics
+     */
+    solveQuantumMultiNodeRoute(startCoord, routeSequence = [], isBlocked = false) {
+        if (!routeSequence || routeSequence.length === 0) {
+            return {
+                fullPolyline: [startCoord],
+                legs: [],
+                totalDistanceKm: 0,
+                totalEtaMinutes: 0,
+                totalFuelBurnLiters: 0,
+                totalCarbonEmittedKg: 0,
+                totalCarbonSavedKg: 0,
+                roadColor: isBlocked ? '#ef4444' : '#10b981',
+                status: isBlocked ? 'OBSTRUCTED' : 'CLEAR'
+            };
+        }
+
+        let current = [...startCoord];
+        let fullPolyline = [startCoord];
+        let legs = [];
+        let totalDistanceKm = 0;
+        let totalEtaMinutes = 0;
+        let totalFuelBurnLiters = 0;
+        let totalCarbonSavedKg = 0;
+        let worstColor = '#10b981';
+
+        routeSequence.forEach((stop, idx) => {
+            const dest = [stop.lat, stop.lng];
+            let legSpeed = 42; // km/h
+            let legColor = '#10b981';
+            let hazardStatus = 'Clear Road Vector';
+
+            const rainNum = parseInt(stop.rain) || 0;
+            const windNum = parseInt(stop.wind) || 0;
+            const hasSevereFlood = isBlocked || (stop.hazard && stop.hazard.toLowerCase().includes('flood')) || (stop.hazard && stop.hazard.toLowerCase().includes('block'));
+            const hasStorm = rainNum > 25 || windNum > 40 || (stop.hazard && stop.hazard.toLowerCase().includes('storm')) || (stop.hazard && stop.hazard.toLowerCase().includes('risk'));
+
+            if (hasSevereFlood) {
+                legSpeed = 24;
+                legColor = '#ef4444';
+                hazardStatus = 'Severe Inundation / Roadblock (Tunneling Detour Applied)';
+                worstColor = '#ef4444';
+            } else if (hasStorm) {
+                legSpeed = 32;
+                legColor = '#f59e0b';
+                hazardStatus = 'Storm Hazard / Waterlogged Congestion';
+                if (worstColor !== '#ef4444') worstColor = '#f59e0b';
+            }
+
+            // Road snapped leg path
+            let legPath = [];
+            if (typeof getRoadSnappedPath === 'function') {
+                legPath = getRoadSnappedPath(current, dest, hasSevereFlood);
+            } else if (typeof window !== 'undefined' && typeof window.getRoadSnappedPath === 'function') {
+                legPath = window.getRoadSnappedPath(current, dest, hasSevereFlood);
+            } else {
+                legPath = [current, dest];
+            }
+
+            let legPathDist = 0;
+            for (let i = 0; i < legPath.length - 1; i++) {
+                legPathDist += Math.hypot(legPath[i + 1][0] - legPath[i][0], legPath[i + 1][1] - legPath[i][1]) * 111;
+            }
+
+            const legDistFactor = hasSevereFlood ? 1.30 : (hasStorm ? 1.15 : 1.05);
+            const legDist = Number((Math.max(1.2, legPathDist * legDistFactor)).toFixed(2));
+            const legEta = Number(((legDist / legSpeed) * 60).toFixed(1));
+            const legFuel = Number((legDist * 0.138).toFixed(2));
+            const legClassicalFuel = Number((legDist * 0.185).toFixed(2));
+            const legCarbonSaved = Number(((legClassicalFuel - legFuel) * this.carbonFactor).toFixed(2));
+
+            for (let i = 1; i < legPath.length; i++) {
+                fullPolyline.push(legPath[i]);
+            }
+
+            totalDistanceKm += legDist;
+            totalEtaMinutes += legEta;
+            totalFuelBurnLiters += legFuel;
+            totalCarbonSavedKg += legCarbonSaved;
+
+            legs.push({
+                seq: stop.seq || (idx + 1),
+                targetNodeId: stop.id || stop.nodeId,
+                targetNodeName: stop.name,
+                from: idx === 0 ? "Staging Base (Prakasam Barrage)" : routeSequence[idx - 1].name,
+                to: stop.name,
+                lat: stop.lat,
+                lng: stop.lng,
+                demand: stop.demand || 50,
+                supplyType: stop.supplyType || 'Relief Supplies',
+                distanceKm: legDist,
+                cumulativeDistanceKm: Number(totalDistanceKm.toFixed(2)),
+                etaMinutes: legEta,
+                cumulativeEtaMinutes: Number(totalEtaMinutes.toFixed(1)),
+                fuelBurnLiters: legFuel,
+                cumulativeFuelBurnLiters: Number(totalFuelBurnLiters.toFixed(2)),
+                carbonSavedKg: legCarbonSaved,
+                speedKmh: legSpeed,
+                hazardStatus,
+                color: legColor,
+                path: legPath
+            });
+            current = dest;
+        });
+
+        totalDistanceKm = Number(totalDistanceKm.toFixed(2));
+        totalEtaMinutes = Number(totalEtaMinutes.toFixed(1));
+        totalFuelBurnLiters = Number(totalFuelBurnLiters.toFixed(2));
+        totalCarbonSavedKg = Number(totalCarbonSavedKg.toFixed(2));
+        const totalCarbonEmittedKg = Number((totalFuelBurnLiters * this.carbonFactor).toFixed(2));
+
+        return {
+            fullPolyline,
+            legs,
+            totalDistanceKm,
+            totalEtaMinutes,
+            totalFuelBurnLiters,
+            totalCarbonEmittedKg,
+            totalCarbonSavedKg,
+            roadColor: worstColor,
+            groundStateEnergy: this.currentEnergy,
+            qaoaLayers: this.qaoaLayers,
+            activeQubits: this.activeQubits,
+            gateFidelity: this.gateFidelity
         };
     }
 
@@ -128,3 +249,10 @@ class QuantumRoutingEngine {
 }
 
 const quantumEngine = new QuantumRoutingEngine();
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        QuantumRoutingEngine,
+        quantumEngine
+    };
+}
