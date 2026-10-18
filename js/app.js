@@ -181,6 +181,25 @@ function bindAllEventHandlers() {
         });
         window._modalEscBound = true;
     }
+
+    // Global Responsive Map Resize Invalidation
+    if (!window._mapResizeBound) {
+        let resizeTimer = null;
+        window.addEventListener('resize', () => {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                if (state.tacticalMasterMap) state.tacticalMasterMap.invalidateSize();
+                if (state.driverMap) state.driverMap.invalidateSize();
+                if (state.fullMap) state.fullMap.invalidateSize();
+                if (state.miniMaps) {
+                    Object.values(state.miniMaps).forEach(item => {
+                        if (item && item.map) item.map.invalidateSize();
+                    });
+                }
+            }, 200);
+        });
+        window._mapResizeBound = true;
+    }
 }
 
 // ==========================================

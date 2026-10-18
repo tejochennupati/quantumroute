@@ -658,22 +658,30 @@ path.pulsing-route-vector {
    ========================================== */
 .driver-nav-banner-container {
     position: absolute;
-    top: 1rem;
-    left: 1rem;
-    right: 1rem;
+    top: 4.25rem;
+    left: 0.75rem;
+    right: 0.75rem;
     max-width: 620px;
     margin: 0 auto;
     background: rgba(13, 17, 23, 0.96);
     backdrop-filter: blur(16px);
     border: 1px solid rgba(16, 185, 129, 0.45);
     border-radius: 1rem;
-    padding: 0.75rem 1rem;
+    padding: 0.65rem 0.85rem;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(16, 185, 129, 0.2);
     display: flex;
     align-items: center;
-    gap: 0.85rem;
-    z-index: 1000;
+    gap: 0.75rem;
+    z-index: 25;
     transition: all 0.3s ease;
+}
+
+@media (min-width: 768px) {
+    .driver-nav-banner-container {
+        top: 4.5rem;
+        padding: 0.75rem 1rem;
+        gap: 0.85rem;
+    }
 }
 
 .driver-nav-banner-container:hover {
@@ -823,6 +831,135 @@ path.pulsing-route-vector {
     backdrop-filter: blur(4px);
     pointer-events: none;
 }
+
+/* ========================================================
+   RESPONSIVE LAYOUT & MOBILE / TABLET TARGETED STYLES
+   ======================================================== */
+html, body {
+    overflow-x: hidden !important;
+    max-width: 100vw !important;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Touch-Friendly Action Buttons */
+button, select, input {
+    touch-action: manipulation;
+}
+
+/* Mini-Map Height Guarantees on Mobile & Tablet */
+@media (max-width: 1023px) {
+    .map-card {
+        min-height: 240px !important;
+    }
+    .map-card .driver-mini-map {
+        min-height: 150px !important;
+        height: 150px !important;
+    }
+}
+
+/* Driver Navigation HUD on Mobile & Tablets */
+@media (max-width: 768px) {
+    .driver-nav-banner-container {
+        top: 3.85rem;
+        left: 0.5rem;
+        right: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        gap: 0.5rem;
+    }
+    .nav-maneuver-icon-box {
+        width: 38px;
+        height: 38px;
+        border-radius: 0.6rem;
+    }
+    .nav-maneuver-icon-box i {
+        font-size: 1.05rem;
+    }
+    .nav-maneuver-dist {
+        font-size: 1rem;
+    }
+    .nav-maneuver-step {
+        font-size: 0.8rem;
+    }
+    .nav-maneuver-sub {
+        font-size: 0.68rem;
+    }
+    .nav-stats-pill {
+        padding-left: 0.5rem;
+    }
+    .nav-stats-pill .eta-val {
+        font-size: 0.75rem;
+    }
+    .nav-stats-pill .dist-val {
+        font-size: 0.65rem;
+    }
+    /* Touch target padding for Leaflet zoom controls */
+    .leaflet-touch .leaflet-control-zoom a {
+        width: 36px !important;
+        height: 36px !important;
+        line-height: 36px !important;
+        font-size: 18px !important;
+    }
+    .leaflet-control-zoom {
+        margin-top: 5.5rem !important;
+        margin-left: 0.5rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .driver-nav-banner-container {
+        top: 3.65rem;
+        left: 0.4rem;
+        right: 0.4rem;
+        padding: 0.4rem 0.6rem;
+        gap: 0.45rem;
+    }
+    .nav-maneuver-icon-box {
+        width: 34px;
+        height: 34px;
+        border-radius: 0.5rem;
+    }
+    .nav-maneuver-icon-box i {
+        font-size: 0.95rem;
+    }
+    .nav-maneuver-dist {
+        font-size: 0.9rem;
+    }
+    .nav-maneuver-step {
+        font-size: 0.75rem;
+    }
+    .nav-maneuver-sub {
+        font-size: 0.64rem;
+    }
+    .nav-stats-pill {
+        padding-left: 0.4rem;
+    }
+    .nav-stats-pill .eta-val {
+        font-size: 0.7rem;
+    }
+    .nav-stats-pill .dist-val {
+        font-size: 0.6rem;
+    }
+}
+
+@media (max-width: 360px) {
+    .driver-nav-banner-container {
+        top: 3.5rem;
+        left: 0.25rem;
+        right: 0.25rem;
+        padding: 0.35rem 0.5rem;
+        gap: 0.35rem;
+    }
+    .nav-maneuver-dist {
+        font-size: 0.82rem;
+    }
+    .nav-maneuver-step {
+        font-size: 0.7rem;
+    }
+    .nav-stats-pill {
+        padding-left: 0.35rem;
+    }
+}
+
 
 
 

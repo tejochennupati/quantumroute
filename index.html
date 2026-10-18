@@ -333,20 +333,21 @@
             </div>
 
             <!-- TOP COMMAND BAR WITH OFFLINE SIMULATION & NETWORK BADGES -->
-            <header class="command-header px-6 py-2.5 z-10 flex flex-wrap items-center justify-between gap-3">
-                <div class="flex items-center space-x-3">
-                    <button onclick="toggleOfficerSidebar()" class="w-9 h-9 rounded-xl bg-[#161b22] border border-[#30363d] hover:border-[#00f0ff] text-white flex items-center justify-center transition shadow">
-                        <i class="fa-solid fa-bars text-sm"></i>
+            <!-- TOP COMMAND BAR WITH OFFLINE SIMULATION & NETWORK BADGES -->
+            <header class="command-header px-2.5 sm:px-6 py-2 z-10 flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center space-x-2 sm:space-x-3">
+                    <button onclick="toggleOfficerSidebar()" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#161b22] border border-[#30363d] hover:border-[#00f0ff] text-white flex items-center justify-center transition shadow">
+                        <i class="fa-solid fa-bars text-xs sm:text-sm"></i>
                     </button>
-                    <button id="back-grid-btn" onclick="backToGrid()" class="hidden px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] text-[#00f0ff] border border-[#00f0ff]/40 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow">
+                    <button id="back-grid-btn" onclick="backToGrid()" class="hidden px-2.5 sm:px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] text-[#00f0ff] border border-[#00f0ff]/40 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow">
                         <i class="fa-solid fa-arrow-left"></i>
-                        <span>Back to Grid</span>
+                        <span class="hidden xs:inline">Back to Grid</span>
                     </button>
-                    <div class="flex items-center space-x-2.5 bg-[#010409] border border-[#30363d] px-3 py-1 rounded-xl shadow">
-                        <div class="w-6 h-6 rounded-md bg-gradient-to-tr from-[#00f0ff] to-blue-600 flex items-center justify-center font-extrabold text-black text-[10px]">TV</div>
-                        <div>
+                    <div class="flex items-center space-x-2 bg-[#010409] border border-[#30363d] px-2.5 sm:px-3 py-1 rounded-xl shadow max-w-[170px] sm:max-w-none">
+                        <div class="w-6 h-6 rounded-md bg-gradient-to-tr from-[#00f0ff] to-blue-600 flex items-center justify-center font-extrabold text-black text-[10px] shrink-0">TV</div>
+                        <div class="min-w-0">
                             <p class="text-[7px] text-slate-400 uppercase font-semibold">Command Center</p>
-                            <p class="text-[11px] font-extrabold text-white">Officer Tejo Vardhan (GOV-TEJO-2026)</p>
+                            <p class="text-[10px] sm:text-[11px] font-extrabold text-white truncate">Officer Tejo Vardhan (GOV-TEJO-2026)</p>
                         </div>
                     </div>
                 </div>
@@ -377,46 +378,48 @@
                 </div>
 
                 <!-- Right Action Buttons -->
-                <div class="flex items-center space-x-2 text-xs">
-                    <button id="officer-map-mode-btn" onclick="toggleOfficerTacticalMap()" class="px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] text-[#00f0ff] border border-[#00f0ff]/40 rounded-xl text-[10px] uppercase font-bold transition flex items-center space-x-1.5 shadow">
+                <div class="flex items-center space-x-1.5 sm:space-x-2 text-xs flex-wrap">
+                    <button id="officer-map-mode-btn" onclick="toggleOfficerTacticalMap()" class="px-2.5 sm:px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] text-[#00f0ff] border border-[#00f0ff]/40 rounded-xl text-[9px] sm:text-[10px] uppercase font-bold transition flex items-center space-x-1 shadow min-h-[32px]">
                         <i class="fa-solid fa-map-location-dot"></i>
                         <span id="officer-map-mode-text">Tactical Map</span>
                     </button>
-                    <button id="qubo-optimize-btn" onclick="runQuantumOptimization()" class="qubo-run-btn px-3 py-1.5 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-[10px] uppercase shadow transition flex items-center space-x-1.5">
+                    <button id="qubo-optimize-btn" onclick="runQuantumOptimization()" class="qubo-run-btn px-2.5 sm:px-3 py-1.5 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-[9px] sm:text-[10px] uppercase shadow transition flex items-center space-x-1 min-h-[32px]">
                         <i class="fa-solid fa-atom"></i>
-                        <span>Optimize Routes</span>
+                        <span class="hidden sm:inline">Optimize </span><span>Routes</span>
                     </button>
-                    <button id="shift-audit-btn" onclick="generateDailyShiftSummary()" class="px-3 py-1.5 bg-[#14b8a6] hover:bg-[#2dd4bf] text-black font-extrabold rounded-xl text-[10px] uppercase shadow transition flex items-center space-x-1.5">
+                    <button id="shift-audit-btn" onclick="generateDailyShiftSummary()" class="px-2.5 sm:px-3 py-1.5 bg-[#14b8a6] hover:bg-[#2dd4bf] text-black font-extrabold rounded-xl text-[9px] sm:text-[10px] uppercase shadow transition flex items-center space-x-1 min-h-[32px]">
                         <i class="fa-solid fa-file-invoice"></i>
-                        <span>Shift Audit</span>
+                        <span class="hidden sm:inline">Shift </span><span>Audit</span>
                     </button>
-                    <button id="broadcast-directive-btn" onclick="triggerOfficerAudioBroadcast()" class="px-2.5 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 rounded-xl text-[10px] uppercase font-bold transition flex items-center space-x-1">
+                    <button id="broadcast-directive-btn" onclick="triggerOfficerAudioBroadcast()" class="px-2 sm:px-2.5 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 rounded-xl text-[9px] sm:text-[10px] uppercase font-bold transition flex items-center space-x-1 min-h-[32px]">
                         <i class="fa-solid fa-bullhorn text-xs"></i>
                         <span class="hidden sm:inline">Broadcast</span>
                     </button>
-                    <button onclick="location.reload()" title="Lock HUD Session" class="px-2.5 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-[10px] uppercase font-bold transition">
+                    <button onclick="location.reload()" title="Lock HUD Session" class="px-2 sm:px-2.5 py-1.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-[9px] sm:text-[10px] uppercase font-bold transition min-h-[32px]">
                         <i class="fa-solid fa-power-off"></i>
                     </button>
                 </div>
             </header>
 
             <!-- OFFICER TEXT-INPUT LOCATION DISPATCH BAR (SPEC 3) -->
-            <div id="officer-text-dispatch-bar" class="px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs z-10">
+            <div id="officer-text-dispatch-bar" class="px-3 sm:px-6 py-2 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5 text-xs z-10 border-b border-[#30363d]/40">
                 <div class="flex items-center space-x-2 text-[10px] text-[#00f0ff] font-extrabold font-hud uppercase">
                     <i class="fa-solid fa-satellite-dish animate-pulse"></i>
                     <span>Dynamic Text Dispatch:</span>
                 </div>
-                <div class="flex-1 max-w-2xl flex items-center space-x-2">
-                    <input type="text" id="text-dispatch-location" placeholder="Type location (e.g. Tadepalli Flood Sector, Benz Relief Camp, Gannavaram Staging)..." class="flex-1 bg-[#010409] border border-[#30363d] px-3.5 py-1.5 rounded-xl text-white text-xs outline-none focus:border-[#00f0ff]">
-                    <select id="text-dispatch-driver-select" class="bg-[#010409] border border-[#30363d] px-2.5 py-1.5 rounded-xl text-slate-300 text-[10px] outline-none focus:border-[#00f0ff]">
-                        <option value="AUTO">⚡ Auto-Assign (QUBO)</option>
-                    </select>
-                    <button id="text-dispatch-btn" onclick="submitTextLocationDispatch()" class="px-3.5 py-1.5 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-[10px] uppercase transition shadow flex items-center space-x-1.5 whitespace-nowrap">
-                        <i class="fa-solid fa-paper-plane"></i>
-                        <span>Dispatch Node</span>
-                    </button>
+                <div class="flex-1 w-full max-w-full lg:max-w-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input type="text" id="text-dispatch-location" placeholder="Type location (e.g. Tadepalli Flood Sector, Benz Relief Camp)..." class="flex-1 bg-[#010409] border border-[#30363d] px-3.5 py-1.5 rounded-xl text-white text-xs outline-none focus:border-[#00f0ff] min-w-0">
+                    <div class="flex items-center gap-2">
+                        <select id="text-dispatch-driver-select" class="flex-1 sm:flex-initial bg-[#010409] border border-[#30363d] px-2.5 py-1.5 rounded-xl text-slate-300 text-[10px] outline-none focus:border-[#00f0ff]">
+                            <option value="AUTO">⚡ Auto-Assign (QUBO)</option>
+                        </select>
+                        <button id="text-dispatch-btn" onclick="submitTextLocationDispatch()" class="px-3.5 py-1.5 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-[10px] uppercase transition shadow flex items-center justify-center space-x-1.5 whitespace-nowrap min-h-[34px]">
+                            <i class="fa-solid fa-paper-plane"></i>
+                            <span>Dispatch Node</span>
+                        </button>
+                    </div>
                 </div>
-                <button id="onboard-driver-btn" onclick="openDriverRegistrationModal()" class="px-3 py-1.5 bg-[#14b8a6]/20 hover:bg-[#14b8a6]/30 text-[#14b8a6] border border-[#14b8a6]/40 rounded-xl text-[10px] uppercase font-bold transition flex items-center space-x-1.5 shadow">
+                <button id="onboard-driver-btn" onclick="openDriverRegistrationModal()" class="self-start lg:self-auto px-3 py-1.5 bg-[#14b8a6]/20 hover:bg-[#14b8a6]/30 text-[#14b8a6] border border-[#14b8a6]/40 rounded-xl text-[10px] uppercase font-bold transition flex items-center space-x-1.5 shadow min-h-[34px]">
                     <i class="fa-solid fa-user-plus"></i>
                     <span>Onboard Operative</span>
                 </button>
@@ -616,25 +619,25 @@
                 </div>
 
                 <!-- SINGLE-DRIVER EXPANDED DRILL-DOWN VIEW (WIRED TO JS/APP.JS) -->
-                <div id="officer-expanded-view" class="flex-1 flex flex-col md:flex-row overflow-hidden bg-[#010409] hidden">
+                <div id="officer-expanded-view" class="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden bg-[#010409] hidden">
                     
                     <!-- Left Full Leaflet Map Area -->
-                    <div class="flex-1 relative bg-[#010409]">
+                    <div class="w-full md:flex-1 h-72 sm:h-96 md:h-full relative bg-[#010409] shrink-0">
                         <div id="map-full-expanded" class="driver-full-map h-full w-full"></div>
-                        <div class="absolute top-4 left-4 z-20 flex items-center space-x-3 bg-[#0d1117]/90 backdrop-blur-xl border border-[#30363d] px-3.5 py-2 rounded-xl shadow-2xl">
-                            <div id="exp-profile-initials" class="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#00f0ff] to-blue-600 flex items-center justify-center font-extrabold text-black text-xs shadow">TV</div>
-                            <div>
-                                <p class="text-[9px] text-[#00f0ff] uppercase tracking-wider font-extrabold">Active Operative Telemetry</p>
-                                <p id="exp-profile-name" class="text-xs font-bold text-white">Unit #1: Driver Rajesh</p>
+                        <div class="absolute top-2 left-2 sm:top-4 sm:left-4 z-20 flex items-center space-x-2 sm:space-x-3 bg-[#0d1117]/90 backdrop-blur-xl border border-[#30363d] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl shadow-2xl max-w-[calc(100vw-1rem)] sm:max-w-none">
+                            <div id="exp-profile-initials" class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-tr from-[#00f0ff] to-blue-600 flex items-center justify-center font-extrabold text-black text-xs shadow shrink-0">TV</div>
+                            <div class="min-w-0">
+                                <p class="text-[8px] sm:text-[9px] text-[#00f0ff] uppercase tracking-wider font-extrabold">Active Operative Telemetry</p>
+                                <p id="exp-profile-name" class="text-[11px] sm:text-xs font-bold text-white truncate">Unit #1: Driver Rajesh</p>
                             </div>
                         </div>
-                        <div class="absolute bottom-4 left-4 z-20 flex items-center space-x-2">
-                            <button id="reassign-mission-role-btn" onclick="openRoleAssignmentModal(state.selectedDriverId)" class="px-3.5 py-2 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-xs transition uppercase shadow flex items-center space-x-1.5">
+                        <div class="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-20 flex items-center space-x-2">
+                            <button id="reassign-mission-role-btn" onclick="openRoleAssignmentModal(state.selectedDriverId)" class="px-2.5 sm:px-3.5 py-1.5 sm:py-2 bg-[#00f0ff] hover:bg-[#33f3ff] text-black font-extrabold rounded-xl text-[10px] sm:text-xs transition uppercase shadow flex items-center space-x-1.5 min-h-[34px]">
                                 <i class="fa-solid fa-person-military-pointing"></i>
-                                <span>Reassign Mission Role</span>
+                                <span>Reassign Role</span>
                             </button>
-                            <button id="back-to-grid-btn" onclick="backToGrid()" class="px-3.5 py-2 bg-[#161b22] hover:bg-[#21262d] text-white border border-[#30363d] rounded-xl text-xs font-bold transition uppercase">
-                                <i class="fa-solid fa-arrow-left mr-1"></i> Back to Fleet Grid
+                            <button id="back-to-grid-btn" onclick="backToGrid()" class="px-2.5 sm:px-3.5 py-1.5 sm:py-2 bg-[#161b22] hover:bg-[#21262d] text-white border border-[#30363d] rounded-xl text-[10px] sm:text-xs font-bold transition uppercase min-h-[34px]">
+                                <i class="fa-solid fa-arrow-left mr-1"></i> Fleet Grid
                             </button>
                         </div>
                     </div>
@@ -642,7 +645,7 @@
                     <div id="expanded-sidebar-overlay" onclick="toggleExpandedDriverSidebar()" class="hidden"></div>
 
                     <!-- Right Telemetry Sidebar Area -->
-                    <div id="expanded-driver-sidebar" class="w-80 bg-[#0d1117]/95 border-l border-[#30363d] p-5 flex flex-col justify-between overflow-y-auto">
+                    <div id="expanded-driver-sidebar" class="w-full md:w-80 bg-[#0d1117]/95 border-t md:border-t-0 md:border-l border-[#30363d] p-4 sm:p-5 flex flex-col justify-between overflow-y-auto">
                         <div class="space-y-4 text-xs">
                             <div class="flex items-center space-x-3 pb-3 border-b border-[#30363d]">
                                 <div id="side-initials" class="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#14b8a6] to-emerald-500 flex items-center justify-center font-extrabold text-black text-sm shadow">CR</div>
@@ -710,16 +713,18 @@
                     <div id="officer-master-tactical-map" class="h-full w-full"></div>
                     
                     <!-- Interactive Guidance Overlay Pill & Multi-Node Dispatch Mode -->
-                    <div class="absolute top-4 left-4 z-20 flex items-center space-x-3 bg-[#0d1117]/95 backdrop-blur-xl border border-[#00f0ff]/40 px-4 py-2.5 rounded-xl shadow-2xl">
-                        <div class="w-8 h-8 rounded-lg bg-[#00f0ff]/20 text-[#00f0ff] flex items-center justify-center font-bold">
-                            <i class="fa-solid fa-crosshairs animate-pulse"></i>
+                    <div class="absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-auto z-20 flex flex-col sm:flex-row items-start sm:items-center gap-2 bg-[#0d1117]/95 backdrop-blur-xl border border-[#00f0ff]/40 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl shadow-2xl max-w-[calc(100vw-1rem)] sm:max-w-none">
+                        <div class="flex items-center space-x-2.5">
+                            <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#00f0ff]/20 text-[#00f0ff] flex items-center justify-center font-bold text-xs">
+                                <i class="fa-solid fa-crosshairs animate-pulse"></i>
+                            </div>
+                            <div>
+                                <p class="text-[8px] sm:text-[9px] text-[#00f0ff] uppercase tracking-wider font-extrabold font-hud">Tactical Grid Command</p>
+                                <p class="text-[10px] sm:text-xs font-medium text-white">Click map to <span class="text-[#00f0ff] font-bold">Spawn Node</span></p>
+                            </div>
                         </div>
-                        <div>
-                            <p class="text-[9px] text-[#00f0ff] uppercase tracking-wider font-extrabold font-hud">Tactical Grid Command</p>
-                            <p class="text-xs font-medium text-white">Click anywhere on the map to <span class="text-[#00f0ff] font-bold">Tap-to-Spawn Node</span> or <span class="text-amber-400 font-bold">Reassign Vector</span></p>
-                        </div>
-                        <div class="border-l border-[#30363d] pl-3">
-                            <button id="btn-toggle-multi-node-mode" onclick="toggleMultiNodeSelectionMode()" class="px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] border border-amber-400/50 text-amber-400 font-bold rounded-xl text-xs transition flex items-center space-x-2 shadow-lg cursor-pointer">
+                        <div class="border-t sm:border-t-0 sm:border-l border-[#30363d] pt-1.5 sm:pt-0 sm:pl-3 w-full sm:w-auto flex justify-end">
+                            <button id="btn-toggle-multi-node-mode" onclick="toggleMultiNodeSelectionMode()" class="w-full sm:w-auto px-2.5 sm:px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] border border-amber-400/50 text-amber-400 font-bold rounded-xl text-[10px] sm:text-xs transition flex items-center justify-center space-x-2 shadow-lg cursor-pointer min-h-[34px]">
                                 <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
                                 <span id="multi-node-btn-label">⚡ Multi-Node Mode: OFF</span>
                             </button>
@@ -727,7 +732,7 @@
                     </div>
 
                     <!-- FLOATING MULTI-NODE EMERGENCY MISSION DISPATCH DRAWER (SPEC 4 & 5) -->
-                    <div id="officer-pending-mission-drawer" class="absolute top-20 right-4 z-30 hidden w-96 max-h-[85vh] bg-[#0d1117]/98 backdrop-blur-2xl border-2 border-amber-500/70 rounded-2xl shadow-2xl p-4 flex-col space-y-3.5 overflow-hidden">
+                    <div id="officer-pending-mission-drawer" class="absolute top-16 right-2 sm:top-20 sm:right-4 z-30 hidden w-[calc(100vw-1rem)] sm:w-96 max-h-[80vh] sm:max-h-[85vh] bg-[#0d1117]/98 backdrop-blur-2xl border-2 border-amber-500/70 rounded-2xl shadow-2xl p-3 sm:p-4 flex-col space-y-3 overflow-hidden">
                         <!-- Header -->
                         <div class="flex items-center justify-between border-b border-[#30363d] pb-2.5">
                             <div class="flex items-center space-x-2">
@@ -877,26 +882,28 @@
 
         <div class="flex-1 relative flex flex-col h-screen">
             <!-- Driver Top Header Profile Strip -->
-            <div class="absolute top-4 left-4 z-30 flex items-center space-x-3 bg-[#0d1117]/90 backdrop-blur-xl border border-[#30363d] px-3.5 py-2 rounded-xl shadow-2xl pointer-events-auto">
-                <button onclick="toggleDriverSidebar()" class="w-8 h-8 rounded-lg bg-[#161b22] hover:bg-[#21262d] text-white flex items-center justify-center transition shadow">
-                    <i class="fa-solid fa-bars text-xs"></i>
-                </button>
-                <div id="drv-initials-badge" class="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#14b8a6] to-emerald-500 flex items-center justify-center font-bold text-black text-xs shadow">CR</div>
-                <div>
-                    <p class="text-[9px] text-slate-400 uppercase">Field Console</p>
-                    <p id="drv-profile-name" class="text-xs font-bold text-white">Rajesh (Prakasam Barrage)</p>
+            <div class="absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-4 z-30 flex items-center justify-between pointer-events-none">
+                <div class="flex items-center space-x-2 sm:space-x-3 bg-[#0d1117]/90 backdrop-blur-xl border border-[#30363d] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl shadow-2xl pointer-events-auto">
+                    <button onclick="toggleDriverSidebar()" class="w-8 h-8 rounded-lg bg-[#161b22] hover:bg-[#21262d] text-white flex items-center justify-center transition shadow">
+                        <i class="fa-solid fa-bars text-xs"></i>
+                    </button>
+                    <div id="drv-initials-badge" class="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#14b8a6] to-emerald-500 flex items-center justify-center font-bold text-black text-xs shadow shrink-0">CR</div>
+                    <div class="max-w-[120px] sm:max-w-none">
+                        <p class="text-[8px] sm:text-[9px] text-slate-400 uppercase">Field Console</p>
+                        <p id="drv-profile-name" class="text-[11px] sm:text-xs font-bold text-white truncate">Rajesh (Prakasam Barrage)</p>
+                    </div>
                 </div>
-            </div>
 
-            <!-- Glowing Driver Active Vector Cue & Map Orientation Toggle -->
-            <div class="absolute top-4 right-4 z-30 flex items-center space-x-2.5">
-                <button id="driver-map-orientation-btn" onclick="toggleDriverMapOrientation()" class="flex items-center space-x-2 bg-[#0d1117]/95 hover:bg-[#161b22] text-[#00f0ff] border border-[#00f0ff]/40 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-2xl backdrop-blur-xl pointer-events-auto">
-                    <i id="driver-compass-needle" class="fa-solid fa-location-arrow text-emerald-400 transition-transform duration-300" style="transform: rotate(0deg);"></i>
-                    <span id="driver-orientation-mode">NORTH UP</span>
-                </button>
-                <div class="hidden md:flex items-center space-x-2 bg-[#0d1117]/90 backdrop-blur-xl border border-[#00f0ff]/30 px-3.5 py-2 rounded-xl shadow-2xl">
-                    <span class="w-2 h-2 rounded-full bg-[#00f0ff] animate-ping"></span>
-                    <span id="drv-nav-cue" class="text-[10px] text-[#00f0ff] font-bold">NAV VECTOR ACTIVE: Proceeding along NH-16 Relief Transit Corridor</span>
+                <!-- Glowing Driver Active Vector Cue & Map Orientation Toggle -->
+                <div class="flex items-center space-x-2 pointer-events-auto">
+                    <button id="driver-map-orientation-btn" onclick="toggleDriverMapOrientation()" class="flex items-center space-x-1.5 sm:space-x-2 bg-[#0d1117]/95 hover:bg-[#161b22] text-[#00f0ff] border border-[#00f0ff]/40 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-[10px] sm:text-xs font-bold transition shadow-2xl backdrop-blur-xl min-h-[36px]">
+                        <i id="driver-compass-needle" class="fa-solid fa-location-arrow text-emerald-400 transition-transform duration-300" style="transform: rotate(0deg);"></i>
+                        <span id="driver-orientation-mode">NORTH UP</span>
+                    </button>
+                    <div class="hidden lg:flex items-center space-x-2 bg-[#0d1117]/90 backdrop-blur-xl border border-[#00f0ff]/30 px-3.5 py-2 rounded-xl shadow-2xl">
+                        <span class="w-2 h-2 rounded-full bg-[#00f0ff] animate-ping"></span>
+                        <span id="drv-nav-cue" class="text-[10px] text-[#00f0ff] font-bold">NAV VECTOR ACTIVE: Proceeding along NH-16 Relief Transit Corridor</span>
+                    </div>
                 </div>
             </div>
 
@@ -922,13 +929,14 @@
                 <div id="driver-map"></div>
 
                 <!-- Floating Mission Legs Drawer Trigger & Panel (Driver HUD) -->
-                <div class="absolute bottom-6 left-6 z-30 pointer-events-auto">
-                    <button id="driver-toggle-legs-btn" onclick="toggleDriverLegsDrawer()" class="bg-[#0d1117]/95 hover:bg-[#161b22] text-[#00f0ff] border border-[#00f0ff]/40 px-3.5 py-2.5 rounded-xl shadow-2xl font-extrabold text-xs flex items-center space-x-2 transition backdrop-blur-xl">
+                <div class="absolute bottom-16 sm:bottom-6 left-2 sm:left-6 z-30 pointer-events-auto">
+                    <button id="driver-toggle-legs-btn" onclick="toggleDriverLegsDrawer()" class="bg-[#0d1117]/95 hover:bg-[#161b22] text-[#00f0ff] border border-[#00f0ff]/40 px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl shadow-2xl font-extrabold text-[10px] sm:text-xs flex items-center space-x-1.5 sm:space-x-2 transition backdrop-blur-xl min-h-[38px]">
                         <i class="fa-solid fa-route"></i>
-                        <span>10 Mission Legs Telemetry</span>
+                        <span class="hidden xs:inline">10 Mission Legs Telemetry</span>
+                        <span class="xs:hidden">Legs Telemetry</span>
                         <span id="drv-drawer-badge" class="ml-1 px-1.5 py-0.5 bg-[#00f0ff]/20 text-[#00f0ff] rounded font-mono text-[9px]">10 STOPS</span>
                     </button>
-                    <div id="driver-legs-drawer" class="hidden mt-2 w-80 bg-[#0d1117]/98 backdrop-blur-2xl border border-[#30363d] rounded-2xl p-4 shadow-2xl max-h-80 overflow-y-auto">
+                    <div id="driver-legs-drawer" class="hidden mt-2 w-[calc(100vw-1.5rem)] max-w-sm bg-[#0d1117]/98 backdrop-blur-2xl border border-[#30363d] rounded-2xl p-4 shadow-2xl max-h-72 overflow-y-auto">
                         <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-700">
                             <div class="flex items-center space-x-1.5">
                                 <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
@@ -944,17 +952,18 @@
             </div>
 
             <!-- Floating Action Bar -->
-            <div class="absolute bottom-6 right-6 z-30 flex items-center space-x-3">
-                <button id="driver-route-block-btn" onclick="triggerRouteBlock()" class="bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500 hover:text-black px-4 py-3 rounded-xl shadow-2xl font-extrabold text-xs flex items-center space-x-2 transition uppercase tracking-wider">
-                    <i class="fa-solid fa-triangle-exclamation text-sm"></i>
-                    <span>Route Obstructed</span>
+            <div class="absolute bottom-2 left-2 right-2 sm:bottom-6 sm:left-auto sm:right-6 z-30 flex items-center justify-between sm:justify-end gap-1.5 sm:gap-3 pointer-events-auto">
+                <button id="driver-route-block-btn" onclick="triggerRouteBlock()" class="flex-1 sm:flex-initial bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500 hover:text-black px-2.5 sm:px-4 py-2.5 sm:py-3 rounded-xl shadow-2xl font-extrabold text-[10px] sm:text-xs flex items-center justify-center space-x-1.5 transition uppercase tracking-wider min-h-[44px]">
+                    <i class="fa-solid fa-triangle-exclamation text-xs sm:text-sm"></i>
+                    <span class="hidden xs:inline">Route Obstructed</span>
+                    <span class="xs:hidden">Obstructed</span>
                 </button>
-                <button id="driver-sos-btn" onclick="triggerDriverSOS()" class="bg-red-600 hover:bg-red-500 text-white px-4 py-3 rounded-xl shadow-2xl font-extrabold text-xs flex items-center space-x-2 transition animate-pulse uppercase tracking-wider">
-                    <i class="fa-solid fa-car-burst text-sm"></i>
-                    <span>SOS Crash Sensor</span>
+                <button id="driver-sos-btn" onclick="triggerDriverSOS()" class="flex-1 sm:flex-initial bg-red-600 hover:bg-red-500 text-white px-2.5 sm:px-4 py-2.5 sm:py-3 rounded-xl shadow-2xl font-extrabold text-[10px] sm:text-xs flex items-center justify-center space-x-1.5 transition animate-pulse uppercase tracking-wider min-h-[44px]">
+                    <i class="fa-solid fa-car-burst text-xs sm:text-sm"></i>
+                    <span>SOS Crash</span>
                 </button>
-                <button id="driver-stock-keypad-btn" onclick="openModal('calc-modal')" class="bg-[#00f0ff] hover:bg-[#33f3ff] text-black px-5 py-3 rounded-xl shadow-2xl font-extrabold text-xs flex items-center space-x-2 transition uppercase tracking-wider">
-                    <i class="fa-solid fa-calculator text-sm"></i>
+                <button id="driver-stock-keypad-btn" onclick="openModal('calc-modal')" class="flex-1 sm:flex-initial bg-[#00f0ff] hover:bg-[#33f3ff] text-black px-3 sm:px-5 py-2.5 sm:py-3 rounded-xl shadow-2xl font-extrabold text-[10px] sm:text-xs flex items-center justify-center space-x-1.5 transition uppercase tracking-wider min-h-[44px]">
+                    <i class="fa-solid fa-calculator text-xs sm:text-sm"></i>
                     <span>Stock Keypad</span>
                 </button>
             </div>
