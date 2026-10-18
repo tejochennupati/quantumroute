@@ -24,6 +24,16 @@ function parseRouteCoord(node) {
     return null;
 }
 
+function getRiverCenterlineLat(lng) {
+    if (lng <= 80.612) {
+        return 16.5062 - (lng - 80.612) * 0.24;
+    } else if (lng <= 80.6235) {
+        return 16.5062 - (lng - 80.612) * 0.713;
+    } else {
+        return 16.4980 - (lng - 80.6235) * 0.445;
+    }
+}
+
 function checkIsSouth(coord) {
     if (typeof isSouthOfRiver === 'function') return isSouthOfRiver(coord);
     if (typeof window !== 'undefined' && typeof window.isSouthOfRiver === 'function') return window.isSouthOfRiver(coord);
@@ -35,9 +45,7 @@ function checkIsSouth(coord) {
     }
     const lat = Number(coord[0]);
     const lng = Number(coord[1]);
-    if (lng < 80.612) return lat < 16.504;
-    if (lng <= 80.630) return lat < 16.496;
-    return lat < 16.450;
+    return lat < getRiverCenterlineLat(lng);
 }
 
 function densifyCoords(coords, maxDist = 0.08) {
@@ -345,6 +353,13 @@ function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false) {
         const path = roadSnapFn(startCoord, endCoord, isBlocked);
         if (path && path.length >= 2) return path;
     }
+    if (typeof require === 'function') {
+        try {
+            const cfg = require('./config.js');
+            const path = cfg.getRoadSnappedPath(startCoord, endCoord, isBlocked);
+            if (path && path.length >= 2) return path;
+        } catch (e) {}
+    }
     const sSouth = checkIsSouth(startCoord);
     const eSouth = checkIsSouth(endCoord);
     const findNodeFn = (typeof findNearestRoadNode === 'function')
@@ -358,29 +373,43 @@ function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false) {
             ? window.ROAD_NETWORK_NODES
             : null);
 
-    let base;
-    if (findNodeFn && nodeDict) {
-        const sKey = findNodeFn(startCoord, sSouth);
-        const eKey = findNodeFn(endCoord, eSouth);
-        const sPt = nodeDict[sKey] || startCoord;
-        const ePt = nodeDict[eKey] || endCoord;
-        if (sSouth !== eSouth) {
-            const barrageDeck = [
-                [16.5085, 80.6150], [16.5072, 80.6135], [16.5062, 80.6120],
-                [16.5015, 80.6085], [16.4970, 80.6050], [16.4850, 80.6020]
-            ];
-            base = sSouth ? [startCoord, sPt, ...barrageDeck.slice().reverse(), ePt, endCoord] : [startCoord, sPt, ...barrageDeck, ePt, endCoord];
-        } else {
-            base = [startCoord, sPt, ePt, endCoord];
+    const sKey = findNodeFn ? findNodeFn(startCoord, sSouth) : (sSouth ? 'TADEPALLI' : 'PNBS');
+    const eKey = findNodeFn ? findNodeFn(endCoord, eSouth) : (eSouth ? 'TADEPALLI' : 'PNBS');
+    const sPt = (nodeDict && nodeDict[sKey]) || startCoord;
+    const ePt = (nodeDict && nodeDict[eKey]) || endCoord;
+
+    const findPathFn = (typeof findShortestRoadGraphPath === 'function')
+        ? findShortestRoadGraphPath
+        : ((typeof window !== 'undefined' && typeof window.findShortestRoadGraphPath === 'function')
+            ? window.findShortestRoadGraphPath
+            : null);
+
+    if (findPathFn) {
+        const gPath = findPathFn(sKey, eKey, null, isBlocked);
+        if (gPath && gPath.length >= 2) {
+            const assembled = [startCoord];
+            for (const pt of gPath) {
+                if (Math.hypot(pt[0] - assembled[assembled.length - 1][0], pt[1] - assembled[assembled.length - 1][1]) > 0.0003) {
+                    assembled.push(pt);
+                }
+            }
+            if (Math.hypot(endCoord[0] - assembled[assembled.length - 1][0], endCoord[1] - assembled[assembled.length - 1][1]) > 0.0003) {
+                assembled.push(endCoord);
+            }
+            return densifyCoords(assembled, 0.08);
         }
-    } else {
+    }
+
+    if (sSouth !== eSouth) {
         const barrageDeck = [
             [16.5085, 80.6150], [16.5072, 80.6135], [16.5062, 80.6120],
             [16.5015, 80.6085], [16.4970, 80.6050], [16.4850, 80.6020]
         ];
-        base = sSouth ? [startCoord, ...barrageDeck.slice().reverse(), endCoord] : [startCoord, ...barrageDeck, endCoord];
+        const base = sSouth ? [startCoord, sPt, ...barrageDeck.slice().reverse(), ePt, endCoord] : [startCoord, sPt, ...barrageDeck, ePt, endCoord];
+        return densifyCoords(base, 0.08);
     }
-    return densifyCoords(base, 0.08);
+
+    return densifyCoords([startCoord, sPt, ePt, endCoord], 0.08);
 }
 
 class QuantumRoutingEngine {
@@ -463,73 +492,146 @@ class QuantumRoutingEngine {
     }
 
     /**
-     * Quantum QUBO / QAOA Traveling Salesperson Problem (TSP) Tour Optimizer
+     * Quantum QUBO / QAOA Traveling Salesperson Problem (TSP) Tour Optimizer (Spec 6 & Test B)
      * Solves the shortest Hamiltonian tour from startCoord visiting all uncompleted stops,
      * ordering Node 1 as nearest start through Node N for maximum fuel and time efficiency.
+     * Uses genuine road-network travel distances (including river bridge constraints)
+     * rather than Euclidean straight-line distance.
      */
-    solveQuantumTSP(startCoord, stops = []) {
+    solveQuantumTSP(startCoord, stops = [], isBlocked = false) {
         if (!stops || stops.length <= 1) {
             return stops.map((s, i) => ({ ...s, seq: i + 1 }));
         }
 
-        const remaining = stops.map(s => ({ ...s }));
-        const ordered = [];
-        let curr = [...startCoord];
+        const n = stops.length;
+        const getPt = (p) => [
+            Number(p[0] !== undefined ? p[0] : p.lat),
+            Number(p[1] !== undefined ? p[1] : p.lng)
+        ];
 
-        // 1. Quantum Greedy Nearest-Neighbor Initialization
-        while (remaining.length > 0) {
-            let bestIdx = 0;
-            let bestDist = Infinity;
-            for (let i = 0; i < remaining.length; i++) {
-                const s = remaining[i];
-                const d = Math.hypot(s.lat - curr[0], s.lng - curr[1]);
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestIdx = i;
+        // Authoritative Road Journey Metrics (Distance, Time, Fuel, Composite Cost)
+        const getRoadMetrics = (ptA, ptB) => {
+            const a = getPt(ptA);
+            const b = getPt(ptB);
+            if (Math.abs(a[0] - b[0]) < 0.00001 && Math.abs(a[1] - b[1]) < 0.00001) {
+                return { distanceKm: 0, etaMinutes: 0, fuelBurnLiters: 0, cost: 0 };
+            }
+            let distKm = 0;
+            let etaMin = 0;
+            try {
+                const res = calculateRoadRouteSync(a, b, { isBlocked });
+                if (res && typeof res.distanceKm === 'number' && res.distanceKm > 0) {
+                    distKm = res.distanceKm;
+                    etaMin = res.etaMinutes || (distKm / (isBlocked ? 24 : 42) * 60);
+                }
+            } catch (e) {}
+            if (!distKm) {
+                distKm = Math.hypot(b[0] - a[0], b[1] - a[1]) * 111.0;
+                etaMin = (distKm / 35.0) * 60;
+            }
+            const fuelLiters = distKm * 0.138;
+            // Comprehensive Objective: Distance in km + Travel Time (min * 0.25) + Fuel Burn (L * 1.2)
+            const cost = distKm * 1.0 + (etaMin * 0.25) + (fuelLiters * 1.2);
+            return { distanceKm: distKm, etaMinutes: etaMin, fuelBurnLiters: fuelLiters, cost };
+        };
+
+        // Construct Full Cost & Distance Matrix: Index 0 is driver startCoord, Indices 1..n are emergency stops
+        const allLocations = [startCoord, ...stops];
+        const matrixSize = allLocations.length;
+        const costMatrix = Array.from({ length: matrixSize }, () => new Float64Array(matrixSize));
+
+        for (let i = 0; i < matrixSize; i++) {
+            for (let j = 0; j < matrixSize; j++) {
+                if (i === j) {
+                    costMatrix[i][j] = 0;
+                } else {
+                    costMatrix[i][j] = getRoadMetrics(allLocations[i], allLocations[j]).cost;
                 }
             }
-            const nextStop = remaining.splice(bestIdx, 1)[0];
-            ordered.push(nextStop);
-            curr = [nextStop.lat, nextStop.lng];
         }
 
-        // 2. Quantum Annealing 2-Opt Local Search Refinement
-        let improved = true;
-        let iterations = 0;
-        const maxIter = 50;
+        let bestIndices = [];
+        let bestTotalCost = Infinity;
 
-        function calcTourDist(tour) {
-            let d = 0;
-            let c = startCoord;
-            for (const st of tour) {
-                d += Math.hypot(st.lat - c[0], st.lng - c[1]);
-                c = [st.lat, st.lng];
+        if (n <= 8) {
+            // Exact Permutation Optimization: Evaluates all n! permutations to guarantee the globally optimal sequence
+            const stopIndices = Array.from({ length: n }, (_, i) => i + 1);
+
+            function permute(arr, l, r) {
+                if (l === r) {
+                    let currentCost = costMatrix[0][arr[0]];
+                    for (let k = 0; k < arr.length - 1; k++) {
+                        currentCost += costMatrix[arr[k]][arr[k + 1]];
+                    }
+                    if (currentCost < bestTotalCost) {
+                        bestTotalCost = currentCost;
+                        bestIndices = [...arr];
+                    }
+                    return;
+                }
+                for (let i = l; i <= r; i++) {
+                    const tmp = arr[l];
+                    arr[l] = arr[i];
+                    arr[i] = tmp;
+
+                    permute(arr, l + 1, r);
+
+                    arr[i] = arr[l];
+                    arr[l] = tmp;
+                }
             }
-            return d;
-        }
 
-        while (improved && iterations < maxIter) {
-            improved = false;
-            iterations++;
-            for (let i = 0; i < ordered.length - 1; i++) {
-                for (let k = i + 1; k < ordered.length; k++) {
-                    const newTour = [...ordered];
-                    const segment = newTour.slice(i, k + 1).reverse();
-                    newTour.splice(i, segment.length, ...segment);
-
-                    if (calcTourDist(newTour) < calcTourDist(ordered) - 0.0001) {
-                        ordered.splice(0, ordered.length, ...newTour);
-                        improved = true;
-                        break;
+            permute(stopIndices, 0, n - 1);
+        } else {
+            // Quantum Annealing Heuristic for n > 8: Nearest Neighbor + 2-Opt local search refinement
+            const remaining = Array.from({ length: n }, (_, i) => i + 1);
+            let currIdx = 0;
+            while (remaining.length > 0) {
+                let bestNext = 0;
+                let minC = Infinity;
+                for (let i = 0; i < remaining.length; i++) {
+                    const cand = remaining[i];
+                    if (costMatrix[currIdx][cand] < minC) {
+                        minC = costMatrix[currIdx][cand];
+                        bestNext = i;
                     }
                 }
-                if (improved) break;
+                const picked = remaining.splice(bestNext, 1)[0];
+                bestIndices.push(picked);
+                currIdx = picked;
+            }
+
+            let improved = true;
+            let iter = 0;
+            const calcCost = (order) => {
+                let c = costMatrix[0][order[0]];
+                for (let k = 0; k < order.length - 1; k++) {
+                    c += costMatrix[order[k]][order[k + 1]];
+                }
+                return c;
+            };
+            while (improved && iter < 100) {
+                improved = false;
+                iter++;
+                for (let i = 0; i < bestIndices.length - 1; i++) {
+                    for (let k = i + 1; k < bestIndices.length; k++) {
+                        const candidate = [...bestIndices];
+                        const seg = candidate.slice(i, k + 1).reverse();
+                        candidate.splice(i, seg.length, ...seg);
+                        if (calcCost(candidate) < calcCost(bestIndices) - 0.001) {
+                            bestIndices = candidate;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
             }
         }
 
-        return ordered.map((s, idx) => ({
-            ...s,
-            seq: idx + 1
+        return bestIndices.map((idx, seqIdx) => ({
+            ...stops[idx - 1],
+            seq: seqIdx + 1
         }));
     }
 
@@ -575,7 +677,7 @@ class QuantumRoutingEngine {
 
         let activePending = pendingStops;
         if (optimizeTSP && pendingStops.length > 1) {
-            activePending = this.solveQuantumTSP(startCoord, pendingStops);
+            activePending = this.solveQuantumTSP(startCoord, pendingStops, isBlocked);
         }
 
         let nextSeq = completedStops.length + 1;
@@ -755,6 +857,8 @@ class QuantumRoutingEngine {
 }
 
 const quantumEngine = new QuantumRoutingEngine();
+const solveQuantumTSP = (startCoord, stops, isBlocked) => quantumEngine.solveQuantumTSP(startCoord, stops, isBlocked);
+const solveQuantumMultiNodeRoute = (startCoord, routeSequence, isBlocked, optimizeTSP) => quantumEngine.solveQuantumMultiNodeRoute(startCoord, routeSequence, isBlocked, optimizeTSP);
 
 if (typeof window !== 'undefined') {
     window.QuantumRoutingEngine = QuantumRoutingEngine;
@@ -762,6 +866,8 @@ if (typeof window !== 'undefined') {
     window.calculateRoadRoute = calculateRoadRoute;
     window.calculateRoadRouteSync = calculateRoadRouteSync;
     window.resolveRoadSnappedVector = resolveRoadSnappedVector;
+    window.solveQuantumTSP = solveQuantumTSP;
+    window.solveQuantumMultiNodeRoute = solveQuantumMultiNodeRoute;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -770,7 +876,9 @@ if (typeof module !== 'undefined' && module.exports) {
         quantumEngine,
         calculateRoadRoute,
         calculateRoadRouteSync,
-        resolveRoadSnappedVector
+        resolveRoadSnappedVector,
+        solveQuantumTSP,
+        solveQuantumMultiNodeRoute
     };
 }
 

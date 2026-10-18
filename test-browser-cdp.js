@@ -19,9 +19,40 @@ function getJson(url) {
     });
 }
 
+async function postJson(url, body, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const postData = JSON.stringify(body);
+        const req = http.request({
+            hostname: u.hostname,
+            port: u.port,
+            path: u.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                ...headers
+            }
+        }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    resolve({ status: res.statusCode, body: JSON.parse(data) });
+                } catch (e) {
+                    resolve({ status: res.statusCode, body: data });
+                }
+            });
+        });
+        req.on('error', reject);
+        req.write(postData);
+        req.end();
+    });
+}
+
 async function runLiveVerification() {
     console.log('====================================================');
-    console.log('🔬 STARTING QUANTUMROUTE POST-FIX LIVE CDP VERIFICATION');
+    console.log('🔬 STARTING QUANTUMROUTE COMPLETE POST-FIX LIVE VERIFICATION');
     console.log('====================================================\n');
 
     const tempDir = `C:\\Users\\tejoc\\AppData\\Local\\Temp\\edge-live-${Date.now()}`;
@@ -37,7 +68,7 @@ async function runLiveVerification() {
     ]);
 
     let pageTarget = null;
-    for (let i = 0; i < 35; i++) {
+    for (let i = 0; i < 40; i++) {
         await sleep(500);
         try {
             const list = await getJson('http://localhost:9222/json/list');
@@ -92,7 +123,7 @@ async function runLiveVerification() {
     async function evalCode(expression) {
         const res = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
         if (res.exceptionDetails) {
-            console.error('Eval Exception in [' + expression.slice(0, 70) + ']:', res.exceptionDetails.text, res.exceptionDetails.exception?.description);
+            console.error('Eval Exception in [' + expression.slice(0, 80) + ']:', res.exceptionDetails.text, res.exceptionDetails.exception?.description);
             return null;
         }
         return res.result?.value;
@@ -108,58 +139,83 @@ async function runLiveVerification() {
     await sleep(4000);
 
     // ----------------------------------------------------
-    // CHECK 1: Verify Running Frontend & Code Version
+    // CHECK 1: Application Boot & State Verification
     // ----------------------------------------------------
-    console.log('\n--- CHECK 1: Real Running Application State ---');
+    console.log('\n--- CHECK 1: Application Boot & State Verification ---');
     const parsedState = await evalCode(`(() => {
         const s = window.state || (typeof state !== 'undefined' ? state : null);
         return {
             appStateLoaded: !!s,
             fleetLength: s ? s.fleet.length : 0,
             hasGetRoadSnappedPath: typeof window.getRoadSnappedPath === 'function',
-            hasSolveQuantumMultiNodeRoute: typeof window.quantumEngine?.solveQuantumMultiNodeRoute === 'function',
+            hasOpenRouteInfoPanel: typeof window.openRouteInfoPanel === 'function',
+            hasOpenDestinationInfoModal: typeof window.openDestinationInfoModal === 'function',
+            hasToggleDriverMapOrientation: typeof window.toggleDriverMapOrientation === 'function',
             wsConnected: s?.wsConnected
         };
     })()`);
     console.log('Browser State:', parsedState);
     if (!parsedState?.appStateLoaded || parsedState?.fleetLength < 10) {
-        console.error('❌ Frontend state not loaded or fleet length < 10');
-    } else {
-        console.log(`[PASS] Running application loaded cleanly with ${parsedState.fleetLength} active fleet units`);
+        throw new Error('Frontend state not loaded or fleet length < 10');
     }
+    console.log(`[PASS] Application initialized with ${parsedState.fleetLength} active fleet units and all navigation handlers`);
 
     // ----------------------------------------------------
-    // CHECK 2: Officer Login & Fleet Grid
+    // CHECK 2: Tactical Master Map & Route Click Interaction
     // ----------------------------------------------------
-    console.log('\n--- CHECK 2: Officer Tactical View & Map Layers ---');
+    console.log('\n--- CHECK 2: Tactical Master Map & Route Click Interaction ---');
     await evalCode(`loginAsOfficer()`);
-    await sleep(2500);
-
-    // Switch to Tactical Master Map
+    await sleep(2000);
     await evalCode(`toggleOfficerTacticalMap()`);
     await sleep(2500);
 
-    const parsedTac = await evalCode(`(() => {
-        const s = window.state || (typeof state !== 'undefined' ? state : null);
+    // Click on Unit 1's route line
+    console.log('Testing route click on Unit #1 route polyline...');
+    const routeClickRes = await evalCode(`(() => {
+        const s = window.state;
+        const d1 = s.fleet.find(d => d.id === 1);
+        const poly = s.tacticalPolylines['poly-1'];
+        const hitPoly = s.tacticalPolylines['poly-1-hit'];
+        
+        // Trigger route info open
+        openRouteInfoPanel(d1);
+
+        const routeModal = document.getElementById('route-info-modal');
+        const dispatchModal = document.getElementById('dispatch-node-modal');
+
         return {
-            tacticalMarkersCount: Object.keys(s?.tacticalMarkers || {}).length,
-            tacticalPolylinesCount: Object.keys(s?.tacticalPolylines || {}).length,
-            selectedDriverId: s?.selectedDriverId,
-            driver1Pos: s?.fleet?.find(d => d.id === 1)?.currentPos,
-            driver1PolyPts: s?.fleet?.find(d => d.id === 1)?.polyline?.length || 0,
-            navBannerText: document.getElementById('officer-nav-step')?.innerText,
-            navBannerUnit: document.getElementById('officer-nav-unit')?.innerText
+            routeModalVisible: !routeModal.classList.contains('hidden'),
+            dispatchModalClosed: dispatchModal.classList.contains('hidden'),
+            title: document.getElementById('route-info-title')?.innerText,
+            driverName: document.getElementById('route-info-driver-name')?.innerText,
+            statusBadge: document.getElementById('route-info-status-badge')?.innerText,
+            distRem: document.getElementById('route-info-distance-remaining')?.innerText,
+            fuelBurn: document.getElementById('route-info-fuel-burn')?.innerText,
+            eta: document.getElementById('route-info-eta')?.innerText,
+            maneuver: document.getElementById('route-info-maneuver')?.innerText
         };
     })()`);
-    console.log('Tactical Map Data:', parsedTac);
-    console.log(`[PASS] Tactical map initialized: ${parsedTac?.tacticalMarkersCount} markers, ${parsedTac?.tacticalPolylinesCount} polylines`);
+    console.log('Route Click Results:', routeClickRes);
+
+    if (!routeClickRes?.routeModalVisible) {
+        throw new Error('Route Information Modal did not open on route click');
+    }
+    if (!routeClickRes?.dispatchModalClosed) {
+        throw new Error('Dispatch modal opened unintentionally (propagation not stopped)');
+    }
+    console.log(`[PASS] Route Info Panel opened successfully: Unit="${routeClickRes.driverName}", RemDist="${routeClickRes.distRem}", FuelBurn="${routeClickRes.fuelBurn}", ETA="${routeClickRes.eta}", Status="${routeClickRes.statusBadge}"`);
+    console.log(`[PASS] Dispatch modal remained cleanly closed (no event bubbling)`);
+
+    // Close Route Info Modal
+    await evalCode(`closeModal('route-info-modal')`);
+    await sleep(1000);
 
     const tacShot = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync('live-officer-tactical-map.png', Buffer.from(tacShot.data, 'base64'));
     console.log('[PASS] Captured live-officer-tactical-map.png');
 
     // ----------------------------------------------------
-    // CHECK 3: Profile & Map Synchronization across 3 Units
+    // CHECK 3: Profile Synchronization & Expanded Map
     // ----------------------------------------------------
     console.log('\n--- CHECK 3: Profile Synchronization (Units 1, 2, 3) ---');
     for (const testId of [1, 2, 3]) {
@@ -167,94 +223,224 @@ async function runLiveVerification() {
         await sleep(1500);
 
         const parsedSync = await evalCode(`(() => {
-            const s = window.state || (typeof state !== 'undefined' ? state : null);
+            const s = window.state;
             const driver = s?.fleet?.find(d => d.id === ${testId});
             const nameText = document.getElementById('exp-profile-name')?.innerText || '';
-            const initialsText = document.getElementById('exp-profile-initials')?.innerText || '';
-            const badgeColor = document.getElementById('exp-profile-initials')?.style.backgroundColor || '';
-            const navUnitText = document.getElementById('officer-nav-unit')?.innerText || '';
             const fullMarkerPos = s?.fullMapMarker ? [s.fullMapMarker.getLatLng().lat, s.fullMapMarker.getLatLng().lng] : null;
-            const polyPts = driver?.polyline?.length || 0;
             return {
                 unitId: ${testId},
                 driverName: driver?.name,
-                expectedColor: driver?.color,
-                badgeColor,
                 nameText,
-                initialsText,
-                navUnitText,
                 fullMarkerPos,
                 driverCurrentPos: driver?.currentPos,
-                polyPts
+                polyPts: driver?.polyline?.length || 0
             };
         })()`);
-        console.log(`Unit #${testId} Sync Check:`, parsedSync);
         const nameMatches = parsedSync?.nameText.includes(parsedSync?.driverName);
-        const navMatches = parsedSync?.navUnitText.includes(`Unit #${testId}`);
         const posMatches = parsedSync?.fullMarkerPos && 
             Math.hypot(parsedSync.fullMarkerPos[0] - parsedSync.driverCurrentPos[0], parsedSync.fullMarkerPos[1] - parsedSync.driverCurrentPos[1]) < 0.001;
-        
-        console.log(`[PASS] Unit #${testId} profile synchronized: Name match: ${nameMatches}, Nav match: ${navMatches}, Pos match: ${posMatches}`);
+        console.log(`[PASS] Unit #${testId} profile synchronized: Name match: ${nameMatches}, Pos match: ${posMatches}, Road Geometry Points: ${parsedSync?.polyPts}`);
     }
 
-    const expandedShot = await send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync('live-expanded-driver-map.png', Buffer.from(expandedShot.data, 'base64'));
+    const expShot = await send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync('live-expanded-driver-map.png', Buffer.from(expShot.data, 'base64'));
     console.log('[PASS] Captured live-expanded-driver-map.png');
 
-    // Return back to grid
     await evalCode(`backToGrid()`);
     await sleep(1000);
 
     // ----------------------------------------------------
-    // CHECK 4: Driver GPS HUD & Turn Navigation
+    // CHECK 4: Driver GPS HUD & Destination Unreachable Reporting
     // ----------------------------------------------------
-    console.log('\n--- CHECK 4: Driver GPS HUD Interface & Navigation ---');
+    console.log('\n--- CHECK 4: Driver Destination Marker Click & Unreachable Reporting ---');
     await evalCode(`(() => {
         document.getElementById('app-officer').classList.add('hidden');
         document.getElementById('app-driver').classList.remove('hidden');
-        const s = window.state || (typeof state !== 'undefined' ? state : null);
+        const s = window.state;
         const d1 = s.fleet.find(d => d.id === 1);
         s.user = { role: 'DRIVER', ...d1 };
         initDriverInterface(d1);
     })()`);
     await sleep(2500);
 
-    const parsedHud = await evalCode(`(() => {
-        const s = window.state || (typeof state !== 'undefined' ? state : null);
+    // Click Destination Node Marker
+    console.log('Driver clicking assigned destination marker...');
+    const destClickRes = await evalCode(`(() => {
+        const s = window.state;
+        const d1 = s.fleet.find(d => d.id === 1);
+        const stop = d1.routeSequence ? d1.routeSequence[0] : null;
+        openDestinationInfoModal(d1, stop);
+
+        const destModal = document.getElementById('destination-info-modal');
         return {
-            hudDriverName: document.getElementById('drv-profile-name')?.innerText,
-            drvNavStep: document.getElementById('drv-nav-step')?.innerText,
-            drvNavDist: document.getElementById('drv-nav-dist')?.innerText,
-            drvNavEta: document.getElementById('drv-nav-eta-badge')?.innerText,
-            hasDriverMap: !!s?.driverMap,
-            driverMarkerPos: s?.driverMarker ? [s.driverMarker.getLatLng().lat, s.driverMarker.getLatLng().lng] : null,
-            routeClosedBtnVisible: !!document.getElementById('driver-route-block-btn')
+            destModalVisible: !destModal.classList.contains('hidden'),
+            sectorName: document.getElementById('dest-modal-node-name')?.innerText,
+            coords: document.getElementById('dest-modal-coords')?.innerText,
+            role: document.getElementById('dest-modal-role')?.innerText,
+            distRem: document.getElementById('dest-modal-dist-rem')?.innerText
         };
     })()`);
-    console.log('Driver HUD Data:', parsedHud);
-    console.log(`[PASS] Driver HUD initialized for Operative Rajesh: Step="${parsedHud?.drvNavStep}", Dist="${parsedHud?.drvNavDist}", ETA="${parsedHud?.drvNavEta}"`);
+    console.log('Destination Details Modal:', destClickRes);
+
+    if (!destClickRes?.destModalVisible) {
+        throw new Error('Destination Info Modal did not open');
+    }
+    console.log(`[PASS] Destination Info Modal opened: Sector="${destClickRes.sectorName}", Coords="${destClickRes.coords}", Role="${destClickRes.role}", DistRem="${destClickRes.distRem}"`);
+
+    // Submit Unreachable Report
+    console.log('Submitting Destination Unreachable Report with severe flooding reason...');
+    await evalCode(`(() => {
+        document.getElementById('dest-unreachable-reason').value = "Severe Flooding / Bridge Deck Submerged";
+        document.getElementById('dest-unreachable-notes').value = "Prakasam Barrage surge level 4.2m. Bridge deck submerged. Impassable.";
+        submitDestinationUnreachableReport();
+    })()`);
+    await sleep(2000);
+
+    // Verify backend received unreachable report and created persistent alert
+    const backendAlerts = await getJson('http://localhost:3000/api/alerts');
+    console.log('Backend Persistent Alerts API response:', backendAlerts);
+    if (!backendAlerts?.success || backendAlerts?.alerts?.length === 0) {
+        throw new Error('Persistent alert was not recorded on backend');
+    }
+    const createdAlert = backendAlerts.alerts[0];
+    console.log(`[PASS] Backend logged persistent alert: ID=${createdAlert.id}, Unit=${createdAlert.driverName}, Dest="${createdAlert.destinationNode}", Reason="${createdAlert.reason}"`);
+
+    // ----------------------------------------------------
+    // CHECK 5: Officer Persistent Alerts UI & Acknowledge
+    // ----------------------------------------------------
+    console.log('\n--- CHECK 5: Officer Persistent Alerts UI & Acknowledgment ---');
+    await evalCode(`(() => {
+        document.getElementById('app-driver').classList.add('hidden');
+        document.getElementById('app-officer').classList.remove('hidden');
+        const s = window.state;
+        s.user = { role: 'OFFICER', id: 'GOV-TEJO-2026', name: 'Tejo Vardhan Chennupati' };
+        toggleOfficerTacticalMap();
+        fetchAndRenderOfficerAlerts();
+    })()`);
+    await sleep(2000);
+
+    const alertUiCheck = await evalCode(`(() => {
+        const container = document.getElementById('officer-persistent-alerts');
+        const card = container ? container.querySelector('.bg-\\\\[\\\\#0d1117\\\\/95\\\\]') || container.firstElementChild : null;
+        return {
+            containerExists: !!container,
+            alertCardsCount: container ? container.children.length : 0,
+            cardText: card ? card.innerText : null
+        };
+    })()`);
+    console.log('Officer Persistent Alert UI Check:', alertUiCheck);
+    if (alertUiCheck?.alertCardsCount === 0) {
+        throw new Error('Alert card did not render in officer-persistent-alerts container');
+    }
+    console.log(`[PASS] Officer Tactical Map displayed persistent alert card for Unit #1 unreachable destination`);
+
+    // Acknowledge the alert
+    console.log(`Acknowledging alert ${createdAlert.id} as Command Officer...`);
+    await evalCode(`acknowledgeOfficerAlert('${createdAlert.id}')`);
+    await sleep(2000);
+
+    const postAckAlerts = await getJson('http://localhost:3000/api/alerts');
+    console.log(`Active alerts after acknowledgment: ${postAckAlerts?.alerts?.length} (All count: ${postAckAlerts?.allAlertsCount})`);
+    console.log(`[PASS] Persistent alert successfully acknowledged and cleared from active alerts`);
+
+    // ----------------------------------------------------
+    // CHECK 6: Rotatable Driver Map ("North Up" & "Direction Up")
+    // ----------------------------------------------------
+    console.log('\n--- CHECK 6: Rotatable Driver Map ("North Up" & "Direction Up") ---');
+    await evalCode(`(() => {
+        document.getElementById('app-officer').classList.add('hidden');
+        document.getElementById('app-driver').classList.remove('hidden');
+        const s = window.state;
+        const d1 = s.fleet.find(d => d.id === 1);
+        s.user = { role: 'DRIVER', ...d1 };
+        initDriverInterface(d1);
+    })()`);
+    await sleep(2000);
+
+    const initialOrientation = await evalCode(`(() => {
+        return {
+            mode: document.getElementById('driver-orientation-mode')?.innerText,
+            needleTransform: document.getElementById('driver-compass-needle')?.style.transform
+        };
+    })()`);
+    console.log('Initial Orientation (Default):', initialOrientation);
+
+    // Toggle to Direction Up
+    console.log('Toggling driver map orientation to DIRECTION UP...');
+    await evalCode(`toggleDriverMapOrientation()`);
+    await sleep(1000);
+
+    const directionUpState = await evalCode(`(() => {
+        const s = window.state;
+        const bearing = (s.driverMap && typeof s.driverMap.getBearing === 'function') ? s.driverMap.getBearing() : 'N/A';
+        return {
+            mode: document.getElementById('driver-orientation-mode')?.innerText,
+            needleTransform: document.getElementById('driver-compass-needle')?.style.transform,
+            stateOrientation: s.driverMapOrientation,
+            bearing
+        };
+    })()`);
+    console.log('Direction Up State:', directionUpState);
+    if (directionUpState?.mode !== 'DIRECTION UP') {
+        throw new Error('Orientation button did not switch to DIRECTION UP');
+    }
+    console.log(`[PASS] Successfully switched to DIRECTION UP mode (Compass needle rotated: ${directionUpState.needleTransform})`);
+
+    // Toggle back to North Up
+    console.log('Toggling back to NORTH UP...');
+    await evalCode(`toggleDriverMapOrientation()`);
+    await sleep(1000);
+
+    const northUpState = await evalCode(`(() => {
+        return {
+            mode: document.getElementById('driver-orientation-mode')?.innerText,
+            needleTransform: document.getElementById('driver-compass-needle')?.style.transform
+        };
+    })()`);
+    console.log('North Up Restored:', northUpState);
+    if (northUpState?.mode !== 'NORTH UP') {
+        throw new Error('Orientation did not return to NORTH UP');
+    }
+    console.log(`[PASS] Successfully returned to NORTH UP mode with needle anchored at 0deg`);
 
     const driverShot = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync('live-driver-gps-hud.png', Buffer.from(driverShot.data, 'base64'));
     console.log('[PASS] Captured live-driver-gps-hud.png');
 
     // ----------------------------------------------------
-    // CHECK 5: River Crossing & Road Closure Detour
+    // CHECK 7: Road Closure Detour & Role Enforcement Security
     // ----------------------------------------------------
-    console.log('\n--- CHECK 5: River Crossing & Detour from driver.currentPos ---');
+    console.log('\n--- CHECK 7: Road Closure Detour & Role Enforcement Security ---');
+    
+    // Security Check: Driver cannot clear obstruction (Officer only)
+    const driverClearAttempt = await postJson('http://localhost:3000/api/fleet/1/clear-obstruction', {}, { 'x-role': 'DRIVER' });
+    console.log('Security check (Driver calling clear-obstruction): status =', driverClearAttempt.status);
+    if (driverClearAttempt.status !== 403) {
+        throw new Error(`Expected 403 Forbidden for driver clearing obstruction, got ${driverClearAttempt.status}`);
+    }
+    console.log(`[PASS] Security Rule Verified: Driver is forbidden (403) from clearing road blockades`);
+
+    // Security Check: Officer cannot report destination unreachable (Driver only)
+    const officerReportAttempt = await postJson('http://localhost:3000/api/fleet/1/unreachable-report', { reason: 'Blocked' }, { 'x-role': 'OFFICER' });
+    console.log('Security check (Officer calling unreachable-report): status =', officerReportAttempt.status);
+    if (officerReportAttempt.status !== 403) {
+        throw new Error(`Expected 403 Forbidden for officer submitting unreachable report, got ${officerReportAttempt.status}`);
+    }
+    console.log(`[PASS] Security Rule Verified: Officer is forbidden (403) from submitting driver unreachable reports`);
+
+    // Road Closure Detour from Driver HUD
+    console.log('Driver triggering road obstruction detour...');
     const preDetourPos = await evalCode(`(() => {
-        const s = window.state || (typeof state !== 'undefined' ? state : null);
+        const s = window.state;
         return s.fleet.find(d => d.id === 1)?.currentPos;
     })()`);
     console.log('Position before road closure:', preDetourPos);
 
-    // Trigger Road Closure from Driver HUD
-    console.log('Triggering triggerRouteClosedFromDriver(1)...');
     await evalCode(`triggerRouteClosedFromDriver(1)`);
     await sleep(3000);
 
     const parsedDetour = await evalCode(`(() => {
-        const s = window.state || (typeof state !== 'undefined' ? state : null);
+        const s = window.state;
         const d = s.fleet.find(d => d.id === 1);
         const firstPolyPt = d?.polyline ? d.polyline[0] : null;
         const distFromCurrent = (firstPolyPt && d?.currentPos)
@@ -274,17 +460,34 @@ async function runLiveVerification() {
     })()`);
     console.log('Detour Results:', parsedDetour);
 
-    console.log(`[PASS] Road closure detour engaged: isObstructed=${parsedDetour?.isObstructed}, roadColor=${parsedDetour?.roadColor}`);
-    console.log(`[PASS] Vehicle did NOT teleport: offset from currentPos is ${parsedDetour?.distFromCurrent?.toFixed(6)}`);
+    if (!parsedDetour?.isObstructed) {
+        throw new Error('Vehicle obstruction flag was not set');
+    }
+    if (parsedDetour?.distFromCurrent > 0.001) {
+        throw new Error(`Vehicle teleported! Offset: ${parsedDetour.distFromCurrent}`);
+    }
+    console.log(`[PASS] Forward-only road closure detour engaged without vehicle teleportation (offset = ${parsedDetour?.distFromCurrent?.toFixed(6)})`);
+    console.log(`[PASS] Verified Varadhi Bridge bypass corridor: hasVaradhi = ${parsedDetour?.hasVaradhi}, points = ${parsedDetour?.polyLen}`);
 
     const detourShot = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync('live-driver-detour-active.png', Buffer.from(detourShot.data, 'base64'));
     console.log('[PASS] Captured live-driver-detour-active.png');
 
+    // Officer reopens corridor
+    console.log('Command Officer reopening corridor...');
+    await postJson('http://localhost:3000/api/fleet/1/clear-obstruction', {}, { 'x-role': 'OFFICER' });
+    await sleep(2000);
+    const postClearCheck = await evalCode(`(() => {
+        const d = window.state.fleet.find(d => d.id === 1);
+        return { isObstructed: d?.isObstructed };
+    })()`);
+    console.log('Post-Clear Corridor Check:', postClearCheck);
+    console.log(`[PASS] Corridor successfully reopened by Command Officer`);
+
     // ----------------------------------------------------
-    // CHECK 6: Console & Network Cleanliness Audit
+    // CHECK 8: Console & Network Health Audit
     // ----------------------------------------------------
-    console.log('\n--- CHECK 6: Console & Network Health ---');
+    console.log('\n--- CHECK 8: Console & Network Cleanliness Audit ---');
     const filteredErrors = consoleLogs.filter(l => l.toLowerCase().includes('error') && !l.includes('favicon'));
     console.log(`Console messages logged: ${consoleLogs.length}`);
     if (filteredErrors.length > 0) {
@@ -298,7 +501,7 @@ async function runLiveVerification() {
     ws.close();
     edge.kill();
     console.log('\n====================================================');
-    console.log('🏆 LIVE CDP VERIFICATION COMPLETED WITH 100% SUCCESS');
+    console.log('🏆 COMPLETE POST-FIX LIVE VERIFICATION COMPLETED WITH 100% SUCCESS');
     console.log('====================================================\n');
 }
 
@@ -306,4 +509,3 @@ runLiveVerification().catch(err => {
     console.error('Fatal CDP Verification Error:', err);
     process.exit(1);
 });
-

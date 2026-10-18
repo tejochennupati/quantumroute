@@ -763,5 +763,67 @@ path.pulsing-route-vector {
     min-height: 480px;
 }
 
+/* ========================================================
+   PENDING EMERGENCY MULTI-NODE MARKERS (SPEC 4 & TEST A, B, D)
+   ======================================================== */
+.pending-node-marker {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: grab;
+}
+
+.pending-node-marker:active {
+    cursor: grabbing;
+}
+
+.pending-node-badge {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+    color: #ffffff;
+    background: #0d1117;
+    border: 2.5px solid #f59e0b;
+    box-shadow: 0 0 14px rgba(245, 158, 11, 0.7);
+    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pending-node-marker:hover .pending-node-badge {
+    transform: scale(1.18);
+}
+
+.pending-node-badge.badge-unreachable {
+    border-color: #ef4444 !important;
+    background: #450a0a !important;
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.9) !important;
+    animation: emergencyBlink 1.2s infinite;
+}
+
+.pending-node-badge.badge-accessible {
+    border-color: #00f0ff;
+    box-shadow: 0 0 14px rgba(0, 240, 255, 0.7);
+}
+
+.pending-node-label {
+    margin-top: 3px;
+    padding: 1.5px 6px;
+    background: rgba(13, 17, 23, 0.94);
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #e2e8f0;
+    white-space: nowrap;
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+}
+
+
 
 

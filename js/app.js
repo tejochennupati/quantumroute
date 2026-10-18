@@ -25,7 +25,14 @@ const state = {
     clickedCoord: null,
     ws: null,
     wsConnected: false,
-    simulatedOffline: false
+    simulatedOffline: false,
+    driverMapOrientation: 'NORTH_UP',
+    driverHitPolyline: null,
+    pendingUnreachableTarget: null,
+    systemAlerts: [],
+    multiNodeSelectionMode: false,
+    pendingMissionNodes: [],
+    pendingMissionMarkers: {}
 };
 window.state = state;
 
@@ -351,6 +358,42 @@ function handleIncomingSocketMessage(data) {
             renderTacticalMasterMapLayers();
             populateTextDispatchDriverSelect();
         }
+    } else if (data.type === 'MISSION_ASSIGNED') {
+        const dId = data.driverId || (data.driver && data.driver.id);
+        const driver = state.fleet.find(d => d.id === dId);
+        if (driver) {
+            if (data.driver) Object.assign(driver, data.driver);
+            if (data.routeSequence) driver.routeSequence = data.routeSequence;
+            if (data.polyline) driver.polyline = data.polyline;
+            if (data.legs) driver.legs = data.legs;
+            if (data.totalDistanceKm !== undefined) driver.totalDistanceKm = data.totalDistanceKm;
+            if (data.totalEtaMinutes !== undefined) driver.totalEtaMinutes = data.totalEtaMinutes;
+            if (data.totalFuelBurnLiters !== undefined) driver.totalFuelBurnLiters = data.totalFuelBurnLiters;
+            if (data.roadColor) driver.roadColor = data.roadColor;
+            if (data.node) driver.node = data.node;
+            if (data.targetPos) driver.targetPos = data.targetPos;
+
+            offlineStore.saveFleet(state.fleet);
+            updateDriverCardUI(driver);
+            updateMiniMapPolyline(driver.id);
+            renderTacticalMasterMapLayers();
+
+            if (state.selectedDriverId === driver.id) {
+                if (state.driverPolyline) {
+                    state.driverPolyline.setLatLngs(driver.polyline);
+                    state.driverPolyline.setStyle({ color: driver.roadColor || '#10b981' });
+                }
+                renderDriverSequenceMarkers(driver);
+                updateDriverNavigationHUD(driver);
+                renderDriverLegsList(driver);
+            }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                initDriverInterface(driver);
+            }
+            updateTurnByTurnNavBanner(driver);
+            audioEngine.playBeep(980, 0.2);
+            showBroadcastToast(`⚡ Mission Assigned: Unit #${driver.id} (${driver.name}) deployed with ${driver.routeSequence ? driver.routeSequence.length : 1} quantum stops.`);
+        }
     } else if (data.type === 'ROUTE_SEQUENCE_UPDATED') {
         const dId = data.driverId || (data.driver && data.driver.id);
         const driver = state.fleet.find(d => d.id === dId);
@@ -461,6 +504,9 @@ function handleIncomingSocketMessage(data) {
                     state.driverMarker.setLatLng(driver.currentPos);
                 }
                 updateTurnByTurnNavBanner(driver);
+                if (state.driverMapOrientation === 'DIRECTION_UP') {
+                    applyDriverMapOrientation();
+                }
             }
 
             document.querySelectorAll(`.heading-arrow-${driver.id}`).forEach(el => {
@@ -469,12 +515,34 @@ function handleIncomingSocketMessage(data) {
                 }
             });
         }
+    } else if (data.type === 'DESTINATION_UNREACHABLE_REPORT' || data.type === 'SYSTEM_ALERT_CREATED') {
+        // STRICT ROLE ISOLATION: Emergency alerts are strictly for Command Officers
+        if (!state.user || state.user.role !== 'OFFICER') {
+            console.warn('⛔ [Alert Guard] Suppressed officer emergency alert on non-officer client');
+            return;
+        }
+        if (typeof fetchAndRenderOfficerAlerts === 'function') {
+            fetchAndRenderOfficerAlerts();
+        }
+        audioEngine.playBeep(450, 0.3);
+        const report = data.alert || data.report;
+        if (report) {
+            showBroadcastToast(`⚠️ HIGH PRIORITY: ${report.driverName} reported Destination "${report.destinationNode}" UNREACHABLE! (${report.reason})`);
+        }
+    } else if (data.type === 'SYSTEM_ALERT_ACKNOWLEDGED') {
+        // STRICT ROLE ISOLATION: Alert acknowledgments are strictly for Command Officers
+        if (!state.user || state.user.role !== 'OFFICER') {
+            return;
+        }
+        if (typeof fetchAndRenderOfficerAlerts === 'function') {
+            fetchAndRenderOfficerAlerts();
+        }
     }
 }
 
 async function fetchFleetFromBackend() {
     try {
-        const res = await fetch(`${CONFIG.API_URL}/fleet?viewerRole=OFFICER`);
+        const res = await fetch(`${CONFIG.API_URL}/fleet`);
         if (res.ok) {
             const data = await res.json();
             if (data.fleet && data.fleet.length > 0) {
@@ -529,12 +597,15 @@ async function loginAsOfficer() {
         });
         if (res.ok) {
             const data = await res.json();
-            state.user = { role: 'OFFICER', id: data.officerId, name: data.name };
+            state.user = { role: 'OFFICER', id: data.officerId, name: data.name, token: data.token };
+            state.officerToken = data.token;
         } else {
-            state.user = { role: 'OFFICER', id: CONFIG.GOV_OFFICER_ID, name: CONFIG.OFFICER_NAME };
+            state.user = { role: 'OFFICER', id: CONFIG.GOV_OFFICER_ID, name: CONFIG.OFFICER_NAME, token: 'QUANTUM-ALPHA-2026-TEJO-COMMAND' };
+            state.officerToken = 'QUANTUM-ALPHA-2026-TEJO-COMMAND';
         }
     } catch (e) {
-        state.user = { role: 'OFFICER', id: CONFIG.GOV_OFFICER_ID, name: CONFIG.OFFICER_NAME };
+        state.user = { role: 'OFFICER', id: CONFIG.GOV_OFFICER_ID, name: CONFIG.OFFICER_NAME, token: 'QUANTUM-ALPHA-2026-TEJO-COMMAND' };
+        state.officerToken = 'QUANTUM-ALPHA-2026-TEJO-COMMAND';
     }
 
     document.getElementById('auth-screen').classList.add('hidden');
@@ -544,6 +615,7 @@ async function loginAsOfficer() {
     renderWorkforceList();
     initMiniMapsGrid();
     populateTextDispatchDriverSelect();
+    fetchAndRenderOfficerAlerts();
 }
 
 async function loginAsDriver() {
@@ -575,6 +647,12 @@ async function loginAsDriver() {
 
     state.user = { role: 'DRIVER', ...matchedDriver };
     state.selectedDriverId = matchedDriver.id;
+    state.systemAlerts = [];
+    const officerAlertsEl = document.getElementById('officer-persistent-alerts');
+    if (officerAlertsEl) officerAlertsEl.innerHTML = '';
+    const officerSosBanner = document.getElementById('emergency-sos-banner');
+    if (officerSosBanner) officerSosBanner.classList.add('hidden');
+    document.querySelectorAll('.fixed.bottom-5.right-5, .broadcast-toast, [id^="toast-"]').forEach(t => t.remove());
 
     document.getElementById('auth-screen').classList.add('hidden');
     document.getElementById('app-driver').classList.remove('hidden');
@@ -753,71 +831,186 @@ function computeTurnByTurnInstructions(driver) {
         instruction: 'Standby for Dispatch Directive',
         subInstruction: 'Awaiting route allocation from Command Center',
         etaMinutes: 0,
-        distanceKm: 0
+        distanceKm: 0,
+        maneuverType: 'STANDBY',
+        totalStops: 1,
+        completedStops: 0,
+        remainingStops: 1,
+        seqNum: 1
     };
 
-    const activeStop = (driver.routeSequence && driver.routeSequence.find(s => s.status !== 'COMPLETED')) || (driver.routeSequence && driver.routeSequence[0]);
-    const seqNum = activeStop ? (activeStop.seq || 1) : 1;
+    const routeSeq = driver.routeSequence || [];
+    const totalStops = routeSeq.length || 1;
+    const completedStops = routeSeq.filter(s => s.status === 'COMPLETED').length;
+    const activeStop = routeSeq.find(s => s.status !== 'COMPLETED') || routeSeq[0];
+    const seqNum = activeStop ? (activeStop.seq || (completedStops + 1)) : 1;
+    const remainingStops = Math.max(0, totalStops - completedStops);
     const targetName = (activeStop && activeStop.name) ? activeStop.name : (driver.node || 'Target Emergency Sector');
+
+    // Active leg or full polyline forward from current vehicle position
     const activeLeg = (driver.legs && driver.legs.find(l => l.status !== 'COMPLETED')) || (driver.legs && driver.legs[0]);
-    const legDistKm = activeLeg ? activeLeg.distanceKm : (driver.totalDistanceKm || 2.4);
-    const etaMins = activeLeg ? activeLeg.etaMinutes : (driver.totalEtaMinutes || 12);
+    const legPath = (activeLeg && activeLeg.path && activeLeg.path.length > 1) 
+        ? activeLeg.path 
+        : (driver.polyline && driver.polyline.length > 1 ? driver.polyline : []);
 
-    const distText = legDistKm < 1.0 ? `${Math.round(legDistKm * 1000)}m` : `${legDistKm}km`;
-    const lowerTarget = targetName.toLowerCase();
-    let icon = 'fa-diamond-turn-right';
-    let instruction = `Continue straight for ${distText} toward Node ${seqNum}`;
-    let subInstruction = `Heavy truck relief vector to ${targetName}`;
-
-    if (driver.isObstructed) {
-        icon = 'fa-triangle-exclamation';
-        instruction = `DETOUR ENGAGED: Quantum bypass in ${distText}`;
-        subInstruction = `Bypassing high-water hazard toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('barrage') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.5062, driver.currentPos[1] - 80.6120) < 0.015)) {
-        icon = 'fa-bridge';
-        instruction = `Cross Prakasam Barrage Bridge Span in ${distText}`;
-        subInstruction = `Verified river crossing deck toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('varadhi') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.4980, driver.currentPos[1] - 80.6235) < 0.015)) {
-        icon = 'fa-bridge';
-        instruction = `Merge onto Kanaka Durga Varadhi NH-16 in ${distText}`;
-        subInstruction = `Heavy truck expressway bridge toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('benz') || lowerTarget.includes('circle')) {
-        icon = 'fa-arrow-turn-right';
-        instruction = `Turn right in ${distText} at Benz Circle onto MG Road`;
-        subInstruction = `Major arterial corridor toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('tadepalli')) {
-        icon = 'fa-arrow-turn-left';
-        instruction = `Turn left in ${distText} toward Tadepalli Relief Zone`;
-        subInstruction = `Old Toll Gate road toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('gannavaram') || lowerTarget.includes('airbase')) {
-        icon = 'fa-turn-up';
-        instruction = `Continue straight for ${distText} on NH-16 toward Airbase`;
-        subInstruction = `National Highway cargo vector toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('mangalagiri')) {
-        icon = 'fa-arrow-turn-left';
-        instruction = `Follow NH-16 South for ${distText} toward Mangalagiri`;
-        subInstruction = `Southern bypass toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('gunadala') || lowerTarget.includes('eluru')) {
-        icon = 'fa-turn-up';
-        instruction = `Follow Eluru Road for ${distText} toward Gunadala`;
-        subInstruction = `High-capacity thoroughfare toward Node ${seqNum}: ${targetName}`;
-    } else if (lowerTarget.includes('autonagar')) {
-        icon = 'fa-arrow-turn-right';
-        instruction = `Turn onto Bandar Road in ${distText} toward Autonagar`;
-        subInstruction = `Logistics base vector toward Node ${seqNum}: ${targetName}`;
-    } else if (driver.missionStatus === 'DELIVERED') {
-        icon = 'fa-circle-check';
-        instruction = `Mission Completed at Node ${seqNum}: ${targetName}`;
-        subInstruction = 'All relief cargo delivered. Ready for next operational directive.';
+    // Find nearest point index on active path to driver's current position
+    let currIdx = 0;
+    if (driver.currentPos && legPath.length > 1) {
+        let minDist = Infinity;
+        for (let p = 0; p < legPath.length; p++) {
+            const d = Math.hypot(legPath[p][0] - driver.currentPos[0], legPath[p][1] - driver.currentPos[1]);
+            if (d < minDist) {
+                minDist = d;
+                currIdx = p;
+            }
+        }
     }
+
+    // 1. Calculate remaining road distance from current position to end of leg
+    let remainingDistKm = 0;
+    if (currIdx < legPath.length - 1) {
+        for (let p = currIdx; p < legPath.length - 1; p++) {
+            remainingDistKm += Math.hypot(legPath[p+1][0] - legPath[p][0], legPath[p+1][1] - legPath[p][1]) * 111.0;
+        }
+    } else {
+        remainingDistKm = activeLeg ? activeLeg.distanceKm : (driver.totalDistanceKm || 0.5);
+    }
+    remainingDistKm = Number(Math.max(0.1, remainingDistKm).toFixed(2));
+
+    const speed = driver.speed || (driver.isObstructed ? 24 : 40);
+    const etaMins = Number(((remainingDistKm / speed) * 60).toFixed(1));
+
+    // 2. Identify the Next Turn Maneuver along the upcoming path
+    let nextManeuverIdx = -1;
+    let turnAngle = 0;
+    let distToManeuverKm = 0;
+
+    const calcBearing = (p1, p2) => {
+        const dLng = (p2[1] - p1[1]) * Math.PI / 180;
+        const lat1 = p1[0] * Math.PI / 180;
+        const lat2 = p2[0] * Math.PI / 180;
+        const y = Math.sin(dLng) * Math.cos(lat2);
+        const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+        let b = Math.atan2(y, x) * 180 / Math.PI;
+        return (b + 360) % 360;
+    };
+
+    if (currIdx < legPath.length - 2) {
+        let runningDist = 0;
+        for (let p = currIdx; p < legPath.length - 2; p++) {
+            const segDist = Math.hypot(legPath[p+1][0] - legPath[p][0], legPath[p+1][1] - legPath[p][1]) * 111.0;
+            runningDist += segDist;
+
+            const b1 = calcBearing(legPath[p], legPath[p+1]);
+            const b2 = calcBearing(legPath[p+1], legPath[p+2]);
+            let diff = b2 - b1;
+            while (diff > 180) diff -= 360;
+            while (diff < -180) diff += 360;
+
+            if (Math.abs(diff) >= 25) {
+                nextManeuverIdx = p + 1;
+                turnAngle = diff;
+                distToManeuverKm = runningDist;
+                break;
+            }
+        }
+    }
+
+    let maneuverType = 'STRAIGHT';
+    let icon = 'fa-arrow-up';
+    let maneuverText = '';
+
+    const allStopsCompleted = routeSeq.length > 0 && routeSeq.every(s => s.status === 'COMPLETED');
+    if (driver.missionStatus === 'DELIVERED' && allStopsCompleted) {
+        maneuverType = 'DELIVERED';
+        icon = 'fa-circle-check';
+        maneuverText = `Mission Completed: All ${totalStops} emergency nodes delivered`;
+    } else if (remainingDistKm < 0.08 && completedStops >= totalStops - 1) {
+        maneuverType = 'ARRIVE';
+        icon = 'fa-location-dot';
+        maneuverText = `Arriving at Final Node ${seqNum}: ${targetName}`;
+    } else if (remainingDistKm < 0.08) {
+        maneuverType = 'ARRIVE';
+        icon = 'fa-location-dot';
+        maneuverText = `Arriving at Node ${seqNum}: ${targetName}`;
+    } else if (driver.isObstructed) {
+        maneuverType = 'DETOUR';
+        icon = 'fa-triangle-exclamation';
+        maneuverText = `DETOUR ACTIVE: Alternative corridor engaged`;
+    } else if (nextManeuverIdx !== -1) {
+        if (turnAngle >= 60 && turnAngle <= 135) {
+            maneuverType = 'RIGHT';
+            icon = 'fa-arrow-turn-right';
+            maneuverText = 'Turn right';
+        } else if (turnAngle > 25 && turnAngle < 60) {
+            maneuverType = 'SLIGHT_RIGHT';
+            icon = 'fa-arrow-turn-right';
+            maneuverText = 'Bear slight right';
+        } else if (turnAngle <= -60 && turnAngle >= -135) {
+            maneuverType = 'LEFT';
+            icon = 'fa-arrow-turn-left';
+            maneuverText = 'Turn left';
+        } else if (turnAngle < -25 && turnAngle > -60) {
+            maneuverType = 'SLIGHT_LEFT';
+            icon = 'fa-arrow-turn-left';
+            maneuverText = 'Bear slight left';
+        } else if (Math.abs(turnAngle) > 135) {
+            maneuverType = 'U_TURN';
+            icon = 'fa-arrows-rotate';
+            maneuverText = 'Make a U-turn';
+        } else {
+            maneuverType = 'STRAIGHT';
+            icon = 'fa-arrow-up';
+            maneuverText = 'Continue straight';
+        }
+    } else {
+        maneuverType = 'STRAIGHT';
+        icon = 'fa-arrow-up';
+        maneuverText = 'Continue straight';
+        distToManeuverKm = remainingDistKm;
+    }
+
+    // Distance to next maneuver format (calculated separately from remaining destination distance)
+    const distToManeuverM = Math.round(distToManeuverKm * 1000);
+    const maneuverDistText = distToManeuverM < 1000 ? `${distToManeuverM} m` : `${distToManeuverKm.toFixed(1)} km`;
+    const remainingDistText = remainingDistKm < 1.0 ? `${Math.round(remainingDistKm * 1000)} m` : `${remainingDistKm} km`;
+
+    // Road landmark cues
+    let roadCue = 'Municipal Road Corridor';
+    if (targetName.toLowerCase().includes('barrage') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.5062, driver.currentPos[1] - 80.6120) < 0.015)) {
+        roadCue = 'Prakasam Barrage Bridge Deck';
+        icon = 'fa-bridge';
+    } else if (targetName.toLowerCase().includes('varadhi') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.4980, driver.currentPos[1] - 80.6235) < 0.015)) {
+        roadCue = 'Kanaka Durga Varadhi NH-16 Deck';
+        icon = 'fa-bridge';
+    } else if (targetName.toLowerCase().includes('benz')) {
+        roadCue = 'MG Road / Bandar Road Junction';
+    } else if (targetName.toLowerCase().includes('tadepalli')) {
+        roadCue = 'Old Toll Gate / NH-65 South Corridor';
+    } else if (targetName.toLowerCase().includes('eluru')) {
+        roadCue = 'Karl Marx Road (Eluru Road)';
+    }
+
+    const instruction = (maneuverType === 'DELIVERED' || maneuverType === 'ARRIVE')
+        ? maneuverText
+        : `NEXT: ${maneuverText} onto ${roadCue}`;
+
+    const subInstruction = `TARGET: NODE ${seqNum} OF ${totalStops} • ${targetName} (Remaining: ${remainingDistText})`;
 
     return {
         icon,
-        distanceText: distText,
+        distanceText: maneuverDistText,
         instruction,
         subInstruction,
         etaMinutes: etaMins,
-        distanceKm: legDistKm
+        distanceKm: remainingDistKm,
+        maneuverType,
+        seqNum,
+        totalStops,
+        completedStops,
+        remainingStops,
+        roadCue,
+        targetName
     };
 }
 
@@ -832,6 +1025,7 @@ function updateTurnByTurnNavBanner(driver) {
     const drvSub = document.getElementById('drv-nav-sub');
     const drvEta = document.getElementById('drv-nav-eta-badge');
     const drvDistBadge = document.getElementById('drv-nav-dist-badge');
+    const drvCue = document.getElementById('drv-nav-cue');
 
     if (drvIcon) drvIcon.className = `fa-solid ${nav.icon} text-emerald-400 text-xl`;
     if (drvDist) drvDist.innerText = nav.distanceText;
@@ -839,6 +1033,18 @@ function updateTurnByTurnNavBanner(driver) {
     if (drvSub) drvSub.innerText = nav.subInstruction;
     if (drvEta) drvEta.innerText = `${Math.round(nav.etaMinutes)} MIN`;
     if (drvDistBadge) drvDistBadge.innerText = `${nav.distanceKm} km`;
+
+    if (drvCue) {
+        const allCompleted = nav.totalStops > 0 && nav.completedStops >= nav.totalStops;
+        if (driver.missionStatus === 'DELIVERED' && allCompleted) {
+            drvCue.innerText = `MISSION COMPLETED: All ${nav.totalStops} emergency nodes delivered. Unit online.`;
+        } else if (driver.isObstructed) {
+            drvCue.innerText = `REROUTING ACTIVE: Tunneling detour around corridor obstruction.`;
+        } else {
+            const statusLabel = driver.missionStatus === 'ROUTE_READY' ? 'ROUTE READY' : 'GPS: ACTIVE';
+            drvCue.innerText = `CURRENT TARGET: NODE ${nav.seqNum} OF ${nav.totalStops} • COMPLETED: ${nav.completedStops} | REMAINING: ${nav.remainingStops} • ${statusLabel} (${driver.speed || 38} km/h)`;
+        }
+    }
 
     // 2. Officer Tactical Monitor Banner
     const offUnit = document.getElementById('officer-nav-unit');
@@ -850,6 +1056,314 @@ function updateTurnByTurnNavBanner(driver) {
     if (offDist) offDist.innerText = nav.distanceText;
     if (offStep) offStep.innerText = nav.instruction;
     if (offIcon) offIcon.className = `fa-solid ${nav.icon} text-emerald-400`;
+}
+
+// ==========================================
+// 1.4 PRODUCTION INTERACTIVE ROUTE & DESTINATION PANELS
+// ==========================================
+
+/**
+ * Open Dedicated Route Information Panel (Requirement 1 & 2)
+ * Shows distance remaining along real road geometry, estimated fuel burn, ETA, route status, and navigation details.
+ */
+function openRouteInfoPanel(driver) {
+    if (!driver) return;
+    audioEngine.playBeep(780, 0.08);
+
+    const color = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const titleEl = document.getElementById('route-info-title');
+    const nameEl = document.getElementById('route-info-driver-name');
+    const colorChip = document.getElementById('route-info-driver-color');
+    const statusBadge = document.getElementById('route-info-status-badge');
+    const originEl = document.getElementById('route-info-origin');
+    const destEl = document.getElementById('route-info-destination');
+    const distRemEl = document.getElementById('route-info-distance-remaining');
+    const fuelBurnEl = document.getElementById('route-info-fuel-burn');
+    const etaEl = document.getElementById('route-info-eta');
+    const maneuverEl = document.getElementById('route-info-maneuver');
+    const maneuverSubEl = document.getElementById('route-info-maneuver-sub');
+    const curCoordsEl = document.getElementById('route-info-coords-cur');
+    const tgtCoordsEl = document.getElementById('route-info-coords-tgt');
+
+    if (titleEl) titleEl.innerText = `Route Telemetry • Unit #${driver.id}`;
+    if (nameEl) nameEl.innerText = `Unit #${driver.id}: ${driver.name}`;
+    if (colorChip) {
+        colorChip.style.backgroundColor = color;
+        colorChip.style.boxShadow = `0 0 8px ${color}`;
+    }
+
+    if (statusBadge) {
+        const allCompleted = driver.routeSequence && driver.routeSequence.length > 0 && driver.routeSequence.every(s => s.status === 'COMPLETED');
+        if (driver.isObstructed) {
+            statusBadge.innerText = 'OBSTRUCTED / DETOUR ENGAGED';
+            statusBadge.className = 'px-2.5 py-0.5 rounded text-[9px] font-mono font-extrabold uppercase bg-red-500/20 text-red-400 border border-red-500/40';
+        } else if (driver.missionStatus === 'DELIVERED' && allCompleted) {
+            statusBadge.innerText = 'MISSION COMPLETED';
+            statusBadge.className = 'px-2.5 py-0.5 rounded text-[9px] font-mono font-extrabold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/40';
+        } else if (driver.missionStatus === 'ROUTE_READY') {
+            statusBadge.innerText = 'ROUTE READY';
+            statusBadge.className = 'px-2.5 py-0.5 rounded text-[9px] font-mono font-extrabold uppercase bg-cyan-500/20 text-[#00f0ff] border border-cyan-500/40';
+        } else {
+            statusBadge.innerText = 'ON ACTIVE CORRIDOR';
+            statusBadge.className = 'px-2.5 py-0.5 rounded text-[9px] font-mono font-extrabold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/40';
+        }
+    }
+
+    const startNode = (driver.routeSequence && driver.routeSequence.length > 0) ? driver.routeSequence[0].name : 'Vijayawada Central Staging';
+    if (originEl) originEl.innerText = startNode;
+    if (destEl) destEl.innerText = driver.node || 'Disaster Relief Point';
+
+    // Calculate real road distance remaining along active road geometry + pending sequential legs
+    let remDistKm = 0;
+    const { activeCoords } = splitRouteSegments(driver);
+    if (activeCoords && activeCoords.length > 1) {
+        for (let i = 0; i < activeCoords.length - 1; i++) {
+            remDistKm += Math.hypot(activeCoords[i+1][0] - activeCoords[i][0], activeCoords[i+1][1] - activeCoords[i][1]) * 111;
+        }
+    }
+    if (driver.legs && driver.legs.length > 0) {
+        const pendingLegs = driver.legs.filter(l => l.status !== 'COMPLETED');
+        if (pendingLegs.length > 1) {
+            for (let k = 1; k < pendingLegs.length; k++) {
+                remDistKm += parseFloat(pendingLegs[k].distanceKm) || 0;
+            }
+        }
+    }
+    if (remDistKm <= 0.05) {
+        remDistKm = driver.totalDistanceKm || 2.45;
+    }
+    remDistKm = Number((remDistKm * 1.05).toFixed(2));
+    const fuelLiters = Number((remDistKm * 0.138).toFixed(2));
+    const speed = driver.speed || 38;
+    const etaMins = Math.max(1, Math.round((remDistKm / speed) * 60));
+
+    if (distRemEl) distRemEl.innerText = `${remDistKm} km`;
+    if (fuelBurnEl) fuelBurnEl.innerText = `${fuelLiters} L`;
+    if (etaEl) etaEl.innerText = `${etaMins} MIN`;
+
+    const nav = computeTurnByTurnInstructions(driver);
+    if (maneuverEl) maneuverEl.innerText = nav.instruction;
+    if (maneuverSubEl) maneuverSubEl.innerText = nav.subInstruction;
+
+    if (curCoordsEl && driver.currentPos) {
+        curCoordsEl.innerText = `${driver.currentPos[0].toFixed(4)}, ${driver.currentPos[1].toFixed(4)}`;
+    }
+    if (tgtCoordsEl && driver.targetPos) {
+        tgtCoordsEl.innerText = `${driver.targetPos[0].toFixed(4)}, ${driver.targetPos[1].toFixed(4)}`;
+    }
+
+    openModal('route-info-modal');
+}
+
+/**
+ * Open Destination Details & Unreachable Report Dialog (Requirement 2 & 4)
+ */
+function openDestinationInfoModal(driver, stop) {
+    if (!driver) return;
+    audioEngine.playBeep(750, 0.08);
+
+    const targetName = stop?.name || driver.node || 'Assigned Destination';
+    const targetCoords = [stop?.lat || driver.targetPos[0], stop?.lng || driver.targetPos[1]];
+
+    state.pendingUnreachableTarget = {
+        driverId: driver.id,
+        driverName: driver.name,
+        destinationNode: targetName,
+        destinationCoords: targetCoords
+    };
+
+    const modalTitle = document.getElementById('dest-modal-title');
+    const nodeNameEl = document.getElementById('dest-modal-node-name');
+    const coordsEl = document.getElementById('dest-modal-coords');
+    const roleEl = document.getElementById('dest-modal-role');
+    const distRemEl = document.getElementById('dest-modal-dist-rem');
+
+    if (modalTitle) modalTitle.innerText = `Target: ${targetName}`;
+    if (nodeNameEl) nodeNameEl.innerText = targetName;
+    if (coordsEl) coordsEl.innerText = `${targetCoords[0].toFixed(4)}, ${targetCoords[1].toFixed(4)}`;
+    if (roleEl) roleEl.innerText = driver.job || 'Relief Logistics';
+
+    let remKm = 0;
+    if (driver.currentPos && targetCoords) {
+        remKm = Math.hypot(driver.currentPos[0] - targetCoords[0], driver.currentPos[1] - targetCoords[1]) * 111 * 1.08;
+    }
+    if (stop && stop.distanceKm) {
+        remKm = parseFloat(stop.distanceKm);
+    }
+    remKm = Number((remKm || 1.85).toFixed(2));
+    if (distRemEl) distRemEl.innerText = `${remKm} km`;
+
+    openModal('destination-info-modal');
+}
+
+/**
+ * Submit Driver Destination Unreachable Report (Requirement 3 & 5)
+ */
+async function submitDestinationUnreachableReport() {
+    const activeDriver = (state.user && state.user.role === 'DRIVER')
+        ? state.fleet.find(d => d.id === state.user.id)
+        : (state.fleet.find(d => d.id === state.pendingUnreachableTarget?.driverId) || state.fleet[0]);
+
+    if (!activeDriver) return;
+
+    const targetInfo = state.pendingUnreachableTarget || {
+        driverId: activeDriver.id,
+        destinationNode: activeDriver.node,
+        destinationCoords: activeDriver.targetPos
+    };
+
+    const reasonEl = document.getElementById('dest-unreachable-reason');
+    const notesEl = document.getElementById('dest-unreachable-notes');
+    const reason = reasonEl ? reasonEl.value : 'Severe Flooding / Bridge Deck Submerged';
+    const notes = notesEl ? notesEl.value : '';
+
+    try {
+        const payload = {
+            role: 'DRIVER',
+            destinationNode: targetInfo.destinationNode,
+            destinationCoords: targetInfo.destinationCoords,
+            reason: reason,
+            notes: notes
+        };
+
+        const res = await fetch(`${CONFIG.API_URL}/fleet/${activeDriver.id}/unreachable-report`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-role': 'DRIVER' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.success) {
+            closeModal('destination-info-modal');
+            audioEngine.playBeep(440, 0.25);
+            showBroadcastToast(`⚠️ Destination Unreachable Report submitted for "${targetInfo.destinationNode}". Officer alerted.`);
+            if (state.user && state.user.role === 'OFFICER' && typeof fetchAndRenderOfficerAlerts === 'function') {
+                fetchAndRenderOfficerAlerts();
+            }
+        } else {
+            alert(data.message || 'Error submitting unreachable report');
+        }
+    } catch (err) {
+        console.error('Error submitting unreachable report:', err);
+        closeModal('destination-info-modal');
+        showBroadcastToast(`⚠️ Destination Unreachable logged (offline queued).`);
+    }
+}
+
+/**
+ * Fetch and Render Persistent Alerts for Command Officer
+ */
+async function fetchAndRenderOfficerAlerts() {
+    try {
+        if (!state.user || state.user.role !== 'OFFICER') return;
+        const res = await fetch(`${CONFIG.API_URL}/alerts`);
+        if (!res.ok) return;
+        const data = await res.json();
+        state.systemAlerts = data.alerts || [];
+        renderOfficerAlertsList(state.systemAlerts);
+    } catch (e) {
+        console.error('Failed to fetch alerts:', e);
+    }
+}
+
+function renderOfficerAlertsList(alerts) {
+    const container = document.getElementById('officer-persistent-alerts');
+    if (!container) return;
+
+    if (!alerts || alerts.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = alerts.map(a => `
+        <div class="pointer-events-auto bg-[#0d1117]/95 border border-red-500/70 p-3 rounded-xl shadow-2xl backdrop-blur-xl space-y-1.5 transition" id="alert-card-${a.id}">
+            <div class="flex items-center justify-between">
+                <span class="px-2 py-0.5 bg-red-600/30 text-red-400 border border-red-500/50 rounded font-bold text-[9px] uppercase font-hud flex items-center gap-1">
+                    <i class="fa-solid fa-triangle-exclamation"></i> DESTINATION UNREACHABLE
+                </span>
+                <span class="text-[9px] font-mono text-slate-400">${new Date(a.timestamp).toLocaleTimeString()}</span>
+            </div>
+            <p class="text-xs font-bold text-white flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-full inline-block" style="background:${a.driverColor || '#00f0ff'}; box-shadow: 0 0 6px ${a.driverColor || '#00f0ff'}"></span>
+                Operative ${a.driverName} (Unit #${a.driverId})
+            </p>
+            <p class="text-[10px] text-amber-300 font-semibold">Destination: <span class="text-white">${a.destinationNode}</span></p>
+            <p class="text-[10px] text-red-300">Reason: ${a.reason}</p>
+            ${a.notes ? `<p class="text-[9px] text-slate-400 italic">"${a.notes}"</p>` : ''}
+            <div class="pt-1 flex items-center justify-end space-x-2">
+                <button onclick="acknowledgeOfficerAlert('${a.id}')" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[9px] font-bold uppercase transition shadow">
+                    <i class="fa-solid fa-check mr-1"></i> Acknowledge
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function acknowledgeOfficerAlert(alertId) {
+    try {
+        if (!state.user || state.user.role !== 'OFFICER') return;
+        const res = await fetch(`${CONFIG.API_URL}/alerts/${alertId}/acknowledge`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-role': 'OFFICER'
+            },
+            body: JSON.stringify({ role: 'OFFICER' })
+        });
+        const data = await res.json();
+        if (data.success) {
+            audioEngine.playBeep(880, 0.1);
+            showBroadcastToast(`Alert ${alertId} acknowledged.`);
+            fetchAndRenderOfficerAlerts();
+        }
+    } catch (e) {
+        console.error('Failed to acknowledge alert:', e);
+    }
+}
+
+/**
+ * Toggle Driver Map Orientation between North Up and Direction Up (Requirement 6)
+ */
+function toggleDriverMapOrientation() {
+    audioEngine.playBeep(800, 0.08);
+    if (state.driverMapOrientation === 'DIRECTION_UP') {
+        state.driverMapOrientation = 'NORTH_UP';
+    } else {
+        state.driverMapOrientation = 'DIRECTION_UP';
+    }
+    applyDriverMapOrientation();
+}
+
+function applyDriverMapOrientation() {
+    if (!state.driverMap) return;
+    const modeSpan = document.getElementById('driver-orientation-mode');
+    const needle = document.getElementById('driver-compass-needle');
+    const activeDriver = (state.user && state.user.role === 'DRIVER')
+        ? state.fleet.find(d => d.id === state.user.id)
+        : (state.fleet.find(d => d.id === state.selectedDriverId) || state.fleet[0]);
+    const heading = activeDriver?.heading || 0;
+
+    if (state.driverMapOrientation === 'DIRECTION_UP') {
+        if (modeSpan) modeSpan.innerText = 'DIRECTION UP';
+        if (typeof state.driverMap.setBearing === 'function') {
+            state.driverMap.setBearing(-heading);
+        }
+        if (needle) {
+            needle.style.transform = `rotate(${-heading}deg)`;
+            needle.classList.remove('text-emerald-400');
+            needle.classList.add('text-[#00f0ff]');
+        }
+    } else {
+        if (modeSpan) modeSpan.innerText = 'NORTH UP';
+        if (typeof state.driverMap.setBearing === 'function') {
+            state.driverMap.setBearing(0);
+        }
+        if (needle) {
+            needle.style.transform = `rotate(0deg)`;
+            needle.classList.remove('text-[#00f0ff]');
+            needle.classList.add('text-emerald-400');
+        }
+    }
 }
 
 function startDriverTelemetryStream(driver) {
@@ -880,6 +1394,10 @@ function splitRouteSegments(driver) {
         let activeIdx = driver.legs.findIndex(l => l.status === 'IN_PROGRESS');
         if (activeIdx === -1) {
             activeIdx = driver.legs.findIndex(l => l.status !== 'COMPLETED');
+        }
+        const hasPendingStops = driver.routeSequence && driver.routeSequence.some(s => s.status !== 'COMPLETED');
+        if (activeIdx === -1 && hasPendingStops) {
+            activeIdx = 0;
         }
 
         driver.legs.forEach((leg, idx) => {
@@ -1377,6 +1895,12 @@ function expandDriverMap(id) {
 
         const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
 
+        const onFullMapRouteClick = (e) => {
+            if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+            else if (e && e.stopPropagation) e.stopPropagation();
+            openRouteInfoPanel(driver);
+        };
+
         if (!state.fullMap) {
             state.fullMap = L.map('map-full-expanded', { zoomControl: true }).setView([lat, lng], 14);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(state.fullMap);
@@ -1390,6 +1914,7 @@ function expandDriverMap(id) {
                 weight: 3.5,
                 opacity: 0.60
             }).addTo(state.fullMap);
+            state.fullMapCompletedPoly.on('click', onFullMapRouteClick);
 
             state.fullMapPoly = L.polyline(activeLineCoords, {
                 color: polyColor,
@@ -1398,13 +1923,14 @@ function expandDriverMap(id) {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             }).addTo(state.fullMap);
-            state.fullMapPoly.bindPopup(popupContent);
+            state.fullMapPoly.on('click', onFullMapRouteClick);
 
             state.fullMapUpcomingPoly = L.polyline(upcomingCoords, {
                 color: polyColor,
                 weight: 3.8,
                 opacity: 0.85
             }).addTo(state.fullMap);
+            state.fullMapUpcomingPoly.on('click', onFullMapRouteClick);
         } else {
             state.fullMapMarker.setLatLng([lat, lng]);
             state.fullMapMarker.setIcon(beaconIcon);
@@ -1422,6 +1948,7 @@ function expandDriverMap(id) {
                     weight: 3.5,
                     opacity: 0.60
                 }).addTo(state.fullMap);
+                state.fullMapCompletedPoly.on('click', onFullMapRouteClick);
             } else {
                 state.fullMapCompletedPoly.setLatLngs(completedCoords);
                 state.fullMapCompletedPoly.setStyle({ color: pastel, weight: 3.5, opacity: 0.60 });
@@ -1434,7 +1961,6 @@ function expandDriverMap(id) {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             });
-            state.fullMapPoly.setPopupContent(popupContent);
 
             if (!state.fullMapUpcomingPoly) {
                 state.fullMapUpcomingPoly = L.polyline(upcomingCoords, {
@@ -1442,6 +1968,7 @@ function expandDriverMap(id) {
                     weight: 3.8,
                     opacity: 0.85
                 }).addTo(state.fullMap);
+                state.fullMapUpcomingPoly.on('click', onFullMapRouteClick);
             } else {
                 state.fullMapUpcomingPoly.setLatLngs(upcomingCoords);
                 state.fullMapUpcomingPoly.setStyle({ color: polyColor, weight: 3.8, opacity: 0.85 });
@@ -1734,9 +2261,18 @@ function initTacticalMasterMap() {
 
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(state.tacticalMasterMap);
 
-            // Interactive Click to Dispatch / Spawn Node
+            // Interactive Click to Dispatch / Spawn Node (Normal Single-Node Mode)
             state.tacticalMasterMap.on('click', (e) => {
+                if (state.multiNodeSelectionMode) return;
                 handleOfficerMapClick(e.latlng.lat, e.latlng.lng);
+            });
+
+            // Interactive Double Click for Emergency Multi-Node Mode (Spec 4 & Test A)
+            state.tacticalMasterMap.on('dblclick', (e) => {
+                if (state.multiNodeSelectionMode) {
+                    if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                    handleOfficerMapDoubleClick(e.latlng.lat, e.latlng.lng);
+                }
             });
         }
 
@@ -1785,6 +2321,12 @@ function renderTacticalMasterMapLayers() {
                     </button>
                 </div>
             `);
+            nodeMarker.on('dblclick', (e) => {
+                if (state.multiNodeSelectionMode) {
+                    if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                    handleOfficerMapDoubleClick(e.latlng.lat, e.latlng.lng);
+                }
+            });
             state.tacticalMarkers[markerKey] = nodeMarker;
         }
     });
@@ -1807,6 +2349,12 @@ function renderTacticalMasterMapLayers() {
             truckMarker.on('click', () => {
                 state.selectedDriverId = driver.id;
                 updateTurnByTurnNavBanner(driver);
+            });
+            truckMarker.on('dblclick', (e) => {
+                if (state.multiNodeSelectionMode) {
+                    if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                    handleOfficerMapDoubleClick(e.latlng.lat, e.latlng.lng);
+                }
             });
             truckMarker.bindPopup(`
                 <div class="tactical-popup p-1 text-xs">
@@ -1835,6 +2383,7 @@ function renderTacticalMasterMapLayers() {
         const polyColor = driver.isObstructed ? '#ef4444' : driverColor;
         const pastelColor = getDriverPastelColor(driverColor, driver.id);
         const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
+        const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
 
         let routeDistKm = driver.totalDistanceKm;
         if (!routeDistKm && driver.polyline && driver.polyline.length > 1) {
@@ -1874,6 +2423,37 @@ function renderTacticalMasterMapLayers() {
             </div>
         `;
 
+        const onRouteClick = (e) => {
+            if (state.multiNodeSelectionMode) return;
+            if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+            else if (e && e.stopPropagation) e.stopPropagation();
+            openRouteInfoPanel(driver);
+        };
+
+        const onRouteDblClick = (e) => {
+            if (state.multiNodeSelectionMode) {
+                if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                handleOfficerMapDoubleClick(e.latlng.lat, e.latlng.lng);
+            }
+        };
+
+        // 0. Invisible Hit Target for effortless clicking
+        const hitPolyKey = `poly-${driver.id}-hit`;
+        const fullHitCoords = (driver.polyline && driver.polyline.length > 1) ? driver.polyline : (activeLineCoords.length > 0 ? activeLineCoords : []);
+        if (!state.tacticalPolylines[hitPolyKey]) {
+            const hitPoly = L.polyline(fullHitCoords, {
+                color: '#000000',
+                weight: 24,
+                opacity: 0,
+                interactive: true
+            }).addTo(state.tacticalMasterMap);
+            hitPoly.on('click', onRouteClick);
+            hitPoly.on('dblclick', onRouteDblClick);
+            state.tacticalPolylines[hitPolyKey] = hitPoly;
+        } else {
+            state.tacticalPolylines[hitPolyKey].setLatLngs(fullHitCoords);
+        }
+
         // 1. Completed segment in pastel tint
         const compPolyKey = `poly-${driver.id}-completed`;
         if (!state.tacticalPolylines[compPolyKey]) {
@@ -1882,6 +2462,8 @@ function renderTacticalMasterMapLayers() {
                 weight: 3.5,
                 opacity: 0.60
             }).addTo(state.tacticalMasterMap);
+            compPoly.on('click', onRouteClick);
+            compPoly.on('dblclick', onRouteDblClick);
             state.tacticalPolylines[compPolyKey] = compPoly;
         } else {
             state.tacticalPolylines[compPolyKey].setLatLngs(completedCoords);
@@ -1893,7 +2475,6 @@ function renderTacticalMasterMapLayers() {
         }
 
         // 2. Active segment in vibrant dashed pulsing line
-        const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
         if (!state.tacticalPolylines[polyKey]) {
             const poly = L.polyline(activeLineCoords, {
                 color: polyColor,
@@ -1902,7 +2483,8 @@ function renderTacticalMasterMapLayers() {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             }).addTo(state.tacticalMasterMap);
-            poly.bindPopup(popupContent);
+            poly.on('click', onRouteClick);
+            poly.on('dblclick', onRouteDblClick);
             poly.on('mouseover', () => poly.setStyle({ weight: 6, opacity: 1 }));
             poly.on('mouseout', () => poly.setStyle({ weight: 4.8, opacity: 0.95 }));
             state.tacticalPolylines[polyKey] = poly;
@@ -1915,7 +2497,6 @@ function renderTacticalMasterMapLayers() {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             });
-            state.tacticalPolylines[polyKey].setPopupContent(popupContent);
         }
 
         // 3. Upcoming segments in vibrant solid line
@@ -1926,7 +2507,8 @@ function renderTacticalMasterMapLayers() {
                 weight: 3.8,
                 opacity: 0.85
             }).addTo(state.tacticalMasterMap);
-            upPoly.bindPopup(popupContent);
+            upPoly.on('click', onRouteClick);
+            upPoly.on('dblclick', onRouteDblClick);
             state.tacticalPolylines[upcomingPolyKey] = upPoly;
         } else {
             state.tacticalPolylines[upcomingPolyKey].setLatLngs(upcomingCoords);
@@ -1935,13 +2517,25 @@ function renderTacticalMasterMapLayers() {
                 weight: 3.8,
                 opacity: 0.85
             });
-            state.tacticalPolylines[upcomingPolyKey].setPopupContent(popupContent);
         }
 
-        // 3. Render numbered sequence badges above assigned stops
+        // 4. Render numbered sequence badges above assigned stops
         const seqList = (driver.routeSequence && driver.routeSequence.length > 0)
             ? driver.routeSequence
             : [{ seq: 1, name: driver.node, lat: targetLat, lng: targetLng, color: polyColor }];
+
+        // Clean up stale sequence markers for this driver beyond current sequence count
+        if (state.tacticalSequenceMarkers) {
+            Object.keys(state.tacticalSequenceMarkers).forEach(key => {
+                if (key.startsWith(`seq-${driver.id}-`)) {
+                    const sNum = parseInt(key.replace(`seq-${driver.id}-`, ''));
+                    if (sNum > seqList.length) {
+                        state.tacticalMasterMap.removeLayer(state.tacticalSequenceMarkers[key]);
+                        delete state.tacticalSequenceMarkers[key];
+                    }
+                }
+            });
+        }
 
         seqList.forEach((stop, sIdx) => {
             const seqNum = stop.seq || (sIdx + 1);
@@ -1977,24 +2571,18 @@ function renderTacticalMasterMapLayers() {
 
             if (!state.tacticalSequenceMarkers[seqKey]) {
                 const seqMarker = L.marker([stopLat, stopLng], { icon: seqIcon, zIndexOffset: 1000 }).addTo(state.tacticalMasterMap);
-                seqMarker.bindPopup(`
-                    <div class="tactical-popup p-1.5 text-xs font-sans min-w-[210px]">
-                        <div class="flex items-center justify-between pb-1 mb-1 border-b border-slate-700">
-                            <span class="font-extrabold text-[#00f0ff]">Stop #${seqNum}: ${stop.name || driver.node}</span>
-                            <span class="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-[#00f0ff]/20 text-[#00f0ff]">LEG ${seqNum}</span>
-                        </div>
-                        <p class="text-[10px] text-white">Assigned: Unit #${driver.id} (${driver.name})</p>
-                        <p class="text-[9px] text-slate-300 mt-0.5">Role: ${driver.job} • Stock: ${driver.stock}</p>
-                        <div class="text-[9px] space-y-0.5 text-slate-300 font-mono bg-[#010409] p-1.5 rounded border border-[#30363d] mt-1">
-                            <div class="flex justify-between"><span>Leg Distance:</span><span class="text-white font-bold">${legDist} km</span></div>
-                            <div class="flex justify-between"><span>Cumulative Dist:</span><span class="text-[#00f0ff] font-bold">${cumulDist} km</span></div>
-                            <div class="flex justify-between"><span>Leg Fuel:</span><span class="text-white font-bold">${legFuel} L</span></div>
-                            <div class="flex justify-between"><span>Cumulative Fuel:</span><span class="text-amber-400 font-bold">${cumulFuel} L</span></div>
-                            <div class="flex justify-between"><span>Leg ETA:</span><span class="text-emerald-400 font-bold">${legEta} min</span></div>
-                            <div class="flex justify-between"><span>Cumulative ETA:</span><span class="text-emerald-300 font-bold">${cumulEta} min</span></div>
-                        </div>
-                    </div>
-                `);
+                seqMarker.on('click', (e) => {
+                    if (state.multiNodeSelectionMode) return;
+                    if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                    else if (e && e.stopPropagation) e.stopPropagation();
+                    openDestinationInfoModal(driver, stop);
+                });
+                seqMarker.on('dblclick', (e) => {
+                    if (state.multiNodeSelectionMode) {
+                        if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                        handleOfficerMapDoubleClick(e.latlng.lat, e.latlng.lng);
+                    }
+                });
                 state.tacticalSequenceMarkers[seqKey] = seqMarker;
             } else {
                 state.tacticalSequenceMarkers[seqKey].setLatLng([stopLat, stopLng]);
@@ -2179,6 +2767,407 @@ async function advanceDriverLeg(driverId) {
 
     audioEngine.triggerCommandAudioBroadcast(`Operative ${updated.name} cleared stop and advanced to next sector.`);
     showBroadcastToast(`Operative ${updated.name} reached and cleared stop! Next vector engaged.`);
+}
+
+// ==========================================
+// 8B. EMERGENCY MULTI-NODE DISPATCH WORKFLOW (SPEC 4, 5, 6, 7 & TESTS A-E)
+// ==========================================
+
+function toggleMultiNodeSelectionMode(forceState = null) {
+    if (forceState !== null) {
+        state.multiNodeSelectionMode = !!forceState;
+    } else {
+        state.multiNodeSelectionMode = !state.multiNodeSelectionMode;
+    }
+
+    const btn = document.getElementById('btn-toggle-multi-node-mode');
+    const label = document.getElementById('multi-node-btn-label');
+    const drawer = document.getElementById('officer-pending-mission-drawer');
+
+    if (state.multiNodeSelectionMode) {
+        audioEngine.playBeep(920, 0.15);
+        if (state.tacticalMasterMap) {
+            state.tacticalMasterMap.doubleClickZoom.disable();
+        }
+        if (btn) {
+            btn.className = "px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border-2 border-amber-400 text-amber-300 font-extrabold rounded-xl text-xs transition flex items-center space-x-2 shadow-[0_0_15px_rgba(245,158,11,0.5)] cursor-pointer";
+        }
+        if (label) {
+            label.innerHTML = `⚡ Multi-Node Mode: <span class="text-white font-extrabold underline">ACTIVE</span>`;
+        }
+        if (drawer) {
+            drawer.classList.remove('hidden');
+            drawer.classList.add('flex');
+        }
+        populatePendingMissionDrivers();
+        renderPendingMissionNodes();
+        renderPendingMissionMarkers();
+        showBroadcastToast('⚡ Emergency Multi-Node Mode ACTIVE: Double-click map to place stops. Double-click zoom disabled.');
+    } else {
+        audioEngine.playBeep(640, 0.1);
+        if (state.tacticalMasterMap) {
+            state.tacticalMasterMap.doubleClickZoom.enable();
+        }
+        if (btn) {
+            btn.className = "px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] border border-amber-400/50 text-amber-400 font-bold rounded-xl text-xs transition flex items-center space-x-2 shadow-lg cursor-pointer";
+        }
+        if (label) {
+            label.innerText = `⚡ Multi-Node Mode: OFF`;
+        }
+        if (drawer) {
+            drawer.classList.add('hidden');
+            drawer.classList.remove('flex');
+        }
+        clearAllPendingMissionMarkers();
+        state.pendingMissionNodes = [];
+        showBroadcastToast('Multi-Node Mode deactivated. Standard map controls restored.');
+    }
+}
+
+function populatePendingMissionDrivers() {
+    const select = document.getElementById('pending-mission-driver-select');
+    if (!select) return;
+    select.innerHTML = state.fleet.map(d => {
+        const isSel = (d.id === state.selectedDriverId) ? 'selected' : '';
+        return `<option value="${d.id}" ${isSel}>Unit #${d.id}: ${d.name} (${d.node || 'Base'} - ${d.job || 'Relief'})</option>`;
+    }).join('');
+}
+
+function handleOfficerMapDoubleClick(lat, lng) {
+    audioEngine.playBeep(880, 0.1);
+
+    // Prevent duplicate clicks within 50m (~0.00045 deg)
+    const isDuplicate = state.pendingMissionNodes.some(n => Math.hypot(n.lat - lat, n.lng - lng) < 0.00045);
+    if (isDuplicate) {
+        audioEngine.playBeep(440, 0.15);
+        showBroadcastToast('⚠️ Duplicate location ignored: Location is within 50m of an existing emergency node.');
+        return;
+    }
+
+    // Rigorous accessibility & water boundary check
+    const accessFn = (typeof validateDestinationAccessibility === 'function')
+        ? validateDestinationAccessibility
+        : (typeof window !== 'undefined' && window.validateDestinationAccessibility);
+    const access = accessFn ? accessFn([lat, lng]) : { isAccessible: true, message: 'Verified' };
+
+    const nodeNum = state.pendingMissionNodes.length + 1;
+    const tempId = `pending-${Date.now()}-${nodeNum}`;
+    const pendingNode = {
+        tempId,
+        name: `Emergency Node ${nodeNum}`,
+        lat: Number(lat.toFixed(6)),
+        lng: Number(lng.toFixed(6)),
+        seq: nodeNum,
+        isAccessible: access.isAccessible,
+        accessReason: access.reason || (access.isAccessible ? 'ROAD_CONNECTED' : 'UNREACHABLE'),
+        roadAccessPoint: access.roadAccessPoint || [lat, lng],
+        distanceToRoadMeters: access.distanceToRoadMeters || 0,
+        message: access.message || ''
+    };
+
+    state.pendingMissionNodes.push(pendingNode);
+
+    if (!access.isAccessible) {
+        audioEngine.playEmergencySiren();
+        showBroadcastToast(`⚠️ Destination UNREACHABLE: ${access.message}`);
+    } else {
+        showBroadcastToast(`📍 Added Pending Node ${nodeNum} at [${lat.toFixed(4)}, ${lng.toFixed(4)}]`);
+    }
+
+    previewPendingMissionQuantumOrder();
+}
+
+function renderPendingMissionMarkers() {
+    if (!state.tacticalMasterMap) return;
+    if (!state.pendingMissionMarkers) state.pendingMissionMarkers = {};
+
+    // Remove markers that are no longer in state.pendingMissionNodes
+    const currentIds = new Set(state.pendingMissionNodes.map(n => n.tempId));
+    Object.keys(state.pendingMissionMarkers).forEach(id => {
+        if (!currentIds.has(id)) {
+            state.tacticalMasterMap.removeLayer(state.pendingMissionMarkers[id]);
+            delete state.pendingMissionMarkers[id];
+        }
+    });
+
+    // Add or update markers
+    state.pendingMissionNodes.forEach(node => {
+        const badgeClass = !node.isAccessible ? 'badge-unreachable' : 'badge-accessible';
+        const badgeBorder = !node.isAccessible ? '#ef4444' : '#f59e0b';
+        const badgeBg = !node.isAccessible ? '#450a0a' : '#0d1117';
+
+        const icon = L.divIcon({
+            className: 'pending-node-marker',
+            html: `
+                <div class="pending-node-badge ${badgeClass}" style="border-color:${badgeBorder}; background:${badgeBg};">
+                    ${node.seq || '!'}
+                </div>
+                <div class="pending-node-label">${node.name}</div>
+            `,
+            iconSize: [36, 48],
+            iconAnchor: [18, 24]
+        });
+
+        if (!state.pendingMissionMarkers[node.tempId]) {
+            const marker = L.marker([node.lat, node.lng], {
+                icon,
+                draggable: true,
+                zIndexOffset: 2000
+            }).addTo(state.tacticalMasterMap);
+
+            marker.on('dragend', (e) => {
+                const pos = marker.getLatLng();
+                node.lat = Number(pos.lat.toFixed(6));
+                node.lng = Number(pos.lng.toFixed(6));
+                const accessFn = (typeof validateDestinationAccessibility === 'function')
+                    ? validateDestinationAccessibility
+                    : (typeof window !== 'undefined' && window.validateDestinationAccessibility);
+                const access = accessFn ? accessFn([node.lat, node.lng]) : { isAccessible: true };
+                node.isAccessible = access.isAccessible;
+                node.accessReason = access.reason;
+                node.message = access.message;
+                node.roadAccessPoint = access.roadAccessPoint || [node.lat, node.lng];
+                previewPendingMissionQuantumOrder();
+            });
+
+            marker.bindPopup(`
+                <div class="p-2 font-sans text-xs space-y-1.5">
+                    <p class="font-extrabold text-white text-xs">${node.name}</p>
+                    <p class="text-[10px] ${node.isAccessible ? 'text-emerald-400' : 'text-red-400'} font-bold">
+                        Status: ${node.isAccessible ? 'ROAD ACCESSIBLE' : 'UNREACHABLE'}
+                    </p>
+                    <p class="text-[9px] text-slate-400 font-mono">${node.lat.toFixed(4)}, ${node.lng.toFixed(4)}</p>
+                    ${!node.isAccessible ? `<p class="text-[9px] text-red-300 italic">${node.message}</p>` : ''}
+                    <button onclick="removePendingMissionNode('${node.tempId}')" class="w-full mt-1.5 py-1 bg-red-600 hover:bg-red-500 text-white font-bold rounded text-[9px] uppercase">
+                        Remove Node
+                    </button>
+                </div>
+            `);
+
+            state.pendingMissionMarkers[node.tempId] = marker;
+        } else {
+            state.pendingMissionMarkers[node.tempId].setLatLng([node.lat, node.lng]);
+            state.pendingMissionMarkers[node.tempId].setIcon(icon);
+        }
+    });
+}
+
+function renderPendingMissionNodes() {
+    const listEl = document.getElementById('pending-nodes-list');
+    const countEl = document.getElementById('pending-nodes-count');
+    if (countEl) countEl.innerText = state.pendingMissionNodes.length;
+
+    if (!listEl) return;
+    if (state.pendingMissionNodes.length === 0) {
+        listEl.innerHTML = `<p class="text-center py-4 text-xs text-slate-500 italic">Double-click on the map to add destinations.</p>`;
+        return;
+    }
+
+    listEl.innerHTML = state.pendingMissionNodes.map((n, idx) => {
+        const isAcc = n.isAccessible;
+        return `
+            <div class="p-2 bg-[#010409] rounded-xl border ${isAcc ? 'border-[#30363d]' : 'border-red-500/80 bg-red-950/20'} flex items-center justify-between text-xs">
+                <div class="flex items-center space-x-2">
+                    <span class="w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] ${isAcc ? 'bg-[#00f0ff] text-black' : 'bg-red-600 text-white'}">
+                        ${n.seq || (idx + 1)}
+                    </span>
+                    <div>
+                        <p class="font-bold text-white text-xs leading-none">${n.name}</p>
+                        <p class="text-[9px] font-mono ${isAcc ? 'text-slate-400' : 'text-red-400 font-bold'}">
+                            ${n.lat.toFixed(4)}, ${n.lng.toFixed(4)} • ${isAcc ? 'ROAD OK' : 'UNREACHABLE'}
+                        </p>
+                    </div>
+                </div>
+                <button onclick="removePendingMissionNode('${n.tempId}')" class="text-slate-400 hover:text-red-400 p-1 text-xs">
+                    <i class="fa-solid fa-trash"></i>
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+function removePendingMissionNode(tempId) {
+    audioEngine.playBeep(600, 0.08);
+    if (state.pendingMissionMarkers && state.pendingMissionMarkers[tempId]) {
+        state.tacticalMasterMap.removeLayer(state.pendingMissionMarkers[tempId]);
+        delete state.pendingMissionMarkers[tempId];
+    }
+    state.pendingMissionNodes = state.pendingMissionNodes.filter(n => n.tempId !== tempId);
+    previewPendingMissionQuantumOrder();
+}
+
+function clearAllPendingMissionMarkers() {
+    if (state.pendingMissionMarkers) {
+        Object.keys(state.pendingMissionMarkers).forEach(id => {
+            if (state.tacticalMasterMap && state.pendingMissionMarkers[id]) {
+                state.tacticalMasterMap.removeLayer(state.pendingMissionMarkers[id]);
+            }
+        });
+        state.pendingMissionMarkers = {};
+    }
+}
+
+function previewPendingMissionQuantumOrder() {
+    const drvSelect = document.getElementById('pending-mission-driver-select');
+    const drvId = drvSelect ? parseInt(drvSelect.value) : (state.selectedDriverId || 1);
+    const driver = state.fleet.find(d => d.id === drvId) || state.fleet[0];
+
+    if (!driver || state.pendingMissionNodes.length === 0) {
+        renderPendingMissionNodes();
+        renderPendingMissionMarkers();
+        const distEl = document.getElementById('pending-metric-dist');
+        const etaEl = document.getElementById('pending-metric-eta');
+        const fuelEl = document.getElementById('pending-metric-fuel');
+        if (distEl) distEl.innerText = '0.0 km';
+        if (etaEl) etaEl.innerText = '0.0 min';
+        if (fuelEl) fuelEl.innerText = '0.0 L';
+        return;
+    }
+
+    if (state.pendingMissionNodes.length === 1) {
+        state.pendingMissionNodes[0].seq = 1;
+        const route = (typeof calculateRoadRouteSync === 'function')
+            ? calculateRoadRouteSync(driver.currentPos, [state.pendingMissionNodes[0].lat, state.pendingMissionNodes[0].lng])
+            : { distanceKm: 2.4, etaMinutes: 4.8 };
+        const dist = route.distanceKm || 2.4;
+        const eta = route.etaMinutes || 4.8;
+        const fuel = Number((dist * 0.138).toFixed(2));
+        const distEl = document.getElementById('pending-metric-dist');
+        const etaEl = document.getElementById('pending-metric-eta');
+        const fuelEl = document.getElementById('pending-metric-fuel');
+        if (distEl) distEl.innerText = `${dist} km`;
+        if (etaEl) etaEl.innerText = `${eta} min`;
+        if (fuelEl) fuelEl.innerText = `${fuel} L`;
+        renderPendingMissionNodes();
+        renderPendingMissionMarkers();
+        return;
+    }
+
+    // Execute Quantum TSP Optimization starting from driver.currentPos
+    const tspFn = (typeof solveQuantumTSP === 'function')
+        ? solveQuantumTSP
+        : (typeof quantumEngine !== 'undefined' ? (s, st, b) => quantumEngine.solveQuantumTSP(s, st, b) : null);
+
+    if (tspFn) {
+        const optimized = tspFn(driver.currentPos, state.pendingMissionNodes, driver.isObstructed);
+        // Map optimized order back to state.pendingMissionNodes
+        optimized.forEach(optStop => {
+            const match = state.pendingMissionNodes.find(n => n.tempId === optStop.tempId);
+            if (match) {
+                match.seq = optStop.seq;
+            }
+        });
+        // Sort in order of sequence 1, 2, 3...
+        state.pendingMissionNodes.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+    }
+
+    // Compute route metrics across optimized sequential stops
+    const multiFn = (typeof solveQuantumMultiNodeRoute === 'function')
+        ? solveQuantumMultiNodeRoute
+        : (typeof quantumEngine !== 'undefined' ? (s, seq, b) => quantumEngine.solveQuantumMultiNodeRoute(s, seq, b, false) : null);
+
+    if (multiFn) {
+        const multi = multiFn(driver.currentPos, state.pendingMissionNodes, driver.isObstructed, false);
+        const distEl = document.getElementById('pending-metric-dist');
+        const etaEl = document.getElementById('pending-metric-eta');
+        const fuelEl = document.getElementById('pending-metric-fuel');
+        if (distEl) distEl.innerText = `${multi.totalDistanceKm} km`;
+        if (etaEl) etaEl.innerText = `${multi.totalEtaMinutes} min`;
+        if (fuelEl) fuelEl.innerText = `${multi.totalFuelBurnLiters} L`;
+    }
+
+    renderPendingMissionNodes();
+    renderPendingMissionMarkers();
+}
+
+async function confirmAndAssignMission() {
+    audioEngine.playBeep(980, 0.2);
+
+    // Security check: Only Officers can assign missions
+    if (state.user && state.user.role === 'DRIVER') {
+        alert('Access Denied: Only Command Officers are authorized to assign emergency missions.');
+        return;
+    }
+
+    if (!state.pendingMissionNodes || state.pendingMissionNodes.length === 0) {
+        alert('Please double-click the tactical map to select at least 1 emergency destination node.');
+        return;
+    }
+
+    // Check if any destination is unreachable
+    const unreachable = state.pendingMissionNodes.find(n => !n.isAccessible);
+    if (unreachable) {
+        audioEngine.playEmergencySiren();
+        alert(`❌ CANNOT DISPATCH MISSION:\n\nDestination "${unreachable.name}" is unreachable: ${unreachable.message}\n\nPlease drag the marker to an accessible road or remove it before confirming assignment.`);
+        return;
+    }
+
+    const drvSelect = document.getElementById('pending-mission-driver-select');
+    const drvId = drvSelect ? parseInt(drvSelect.value) : (state.selectedDriverId || 1);
+    const driver = state.fleet.find(d => d.id === drvId) || state.fleet[0];
+
+    const missionPayload = {
+        destinations: state.pendingMissionNodes.map(n => ({
+            id: n.tempId,
+            name: n.name,
+            lat: n.lat,
+            lng: n.lng,
+            demand: 50,
+            supplyType: driver.job || 'Relief Supplies'
+        })),
+        optimizeOrder: true
+    };
+
+    try {
+        const res = await fetch(`${CONFIG.API_URL}/fleet/${driver.id}/mission`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-role': 'OFFICER'
+            },
+            body: JSON.stringify(missionPayload)
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            alert(`Mission Assignment Failed: ${data.message || 'Server error'}`);
+            return;
+        }
+
+        // Update driver state in local fleet
+        const dIdx = state.fleet.findIndex(d => d.id === driver.id);
+        if (dIdx !== -1 && data.driver) {
+            state.fleet[dIdx] = data.driver;
+            await offlineStore.updateDriver(data.driver);
+        }
+
+        // Clean up pending mission markers and drawer
+        clearAllPendingMissionMarkers();
+        state.pendingMissionNodes = [];
+        toggleMultiNodeSelectionMode(false);
+
+        // Re-render tactical layers and HUD
+        renderTacticalMasterMapLayers();
+        updateMiniMapPolyline(driver.id);
+        updateDriverCardUI(data.driver || driver);
+
+        if (state.selectedDriverId === driver.id) {
+            populateExpandedSidebar(data.driver || driver);
+            renderDriverSequenceMarkers(data.driver || driver);
+            updateDriverNavigationHUD(data.driver || driver);
+            renderDriverLegsList(data.driver || driver);
+        }
+        if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+            initDriverInterface(data.driver || driver);
+        }
+        updateTurnByTurnNavBanner(data.driver || driver);
+
+        audioEngine.triggerCommandAudioBroadcast(`Mission assigned to Unit #${driver.id} ${driver.name}. ${data.optimizedSequence.length} sequential sectors locked via Quantum QAOA.`);
+        showBroadcastToast(`✅ Mission Assigned! ${data.optimizedSequence.length} stops deployed to Unit #${driver.id} (${driver.name}) via Quantum QAOA tour!`);
+    } catch (err) {
+        console.error('Error dispatching mission:', err);
+        alert(`Failed to dispatch mission to Unit #${driver.id}. Check server connection.`);
+    }
 }
 
 function handleOfficerMapClick(lat, lng, optionalName = null) {
@@ -2954,24 +3943,12 @@ function renderDriverSequenceMarkers(driver) {
         });
 
         const m = L.marker([stop.lat, stop.lng], { icon: seqIcon, zIndexOffset: 1000 })
-            .addTo(state.driverMap)
-            .bindPopup(`
-                <div class="tactical-popup p-1.5 text-xs font-sans min-w-[210px]">
-                    <div class="flex items-center justify-between pb-1 mb-1 border-b border-slate-700">
-                        <span class="font-extrabold text-[#00f0ff]">Stop #${seqNum}: ${stop.name || driver.node}</span>
-                        <span class="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-[#00f0ff]/20 text-[#00f0ff]">LEG ${seqNum}</span>
-                    </div>
-                    <p class="text-[10px] text-white">Target Mission: <span class="text-white font-medium">${driver.job}</span></p>
-                    <div class="text-[9px] space-y-0.5 text-slate-300 font-mono bg-[#010409] p-1.5 rounded border border-[#30363d] mt-1">
-                        <div class="flex justify-between"><span>Leg Distance:</span><span class="text-white font-bold">${legDist} km</span></div>
-                        <div class="flex justify-between"><span>Cumulative Dist:</span><span class="text-[#00f0ff] font-bold">${cumulDist} km</span></div>
-                        <div class="flex justify-between"><span>Leg Fuel Burn:</span><span class="text-white font-bold">${legFuel} L</span></div>
-                        <div class="flex justify-between"><span>Cumulative Fuel:</span><span class="text-amber-400 font-bold">${cumulFuel} L</span></div>
-                        <div class="flex justify-between"><span>Leg ETA:</span><span class="text-emerald-400 font-bold">${legEta} min</span></div>
-                        <div class="flex justify-between"><span>Cumulative ETA:</span><span class="text-emerald-300 font-bold">${cumulEta} min</span></div>
-                    </div>
-                </div>
-            `);
+            .addTo(state.driverMap);
+        m.on('click', (e) => {
+            if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+            else if (e && e.stopPropagation) e.stopPropagation();
+            openDestinationInfoModal(driver, stop);
+        });
         state.driverSequenceMarkers.push(m);
     });
 }
@@ -3042,8 +4019,14 @@ function initDriverInterface(driver) {
         const heading = calculateHeading(driver.currentPos, (driver.polyline && driver.polyline.length > 1) ? driver.polyline[1] : driver.targetPos);
         const beaconIcon = createLiveProfileMarkerIcon(driver, heading);
 
+        const onDriverRouteClick = (e) => {
+            if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+            else if (e && e.stopPropagation) e.stopPropagation();
+            openRouteInfoPanel(driver);
+        };
+
         if (!state.driverMap) {
-            state.driverMap = L.map('driver-map', { zoomControl: false }).setView([lat, lng], 14);
+            state.driverMap = L.map('driver-map', { zoomControl: false, rotate: true, touchRotate: true }).setView([lat, lng], 14);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(state.driverMap);
 
             // Static high-contrast vehicle marker
@@ -3057,9 +4040,11 @@ function initDriverInterface(driver) {
                 weight: 3.5,
                 opacity: 0.60
             }).addTo(state.driverMap);
+            state.driverCompletedPolyline.on('click', onDriverRouteClick);
 
             // Active segment in dashed pulsing vibrant line
-            const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
+            const allStopsDone = driver.routeSequence && driver.routeSequence.length > 0 && driver.routeSequence.every(s => s.status === 'COMPLETED');
+            const activeLineCoords = allStopsDone ? [] : (activeCoords.length > 0 ? activeCoords : (upcomingCoords.length > 0 ? upcomingCoords : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : []))));
             state.driverPolyline = L.polyline(activeLineCoords, {
                 color: polyColor,
                 weight: 4.8,
@@ -3067,7 +4052,7 @@ function initDriverInterface(driver) {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             }).addTo(state.driverMap);
-            state.driverPolyline.bindPopup(popupContent);
+            state.driverPolyline.on('click', onDriverRouteClick);
 
             // Upcoming segments in solid line
             state.driverUpcomingPolyline = L.polyline(upcomingCoords, {
@@ -3075,6 +4060,17 @@ function initDriverInterface(driver) {
                 weight: 3.8,
                 opacity: 0.85
             }).addTo(state.driverMap);
+            state.driverUpcomingPolyline.on('click', onDriverRouteClick);
+
+            // Invisible hit target
+            const fullDriverRoute = (driver.polyline && driver.polyline.length > 1) ? driver.polyline : activeLineCoords;
+            state.driverHitPolyline = L.polyline(fullDriverRoute, {
+                color: '#000000',
+                weight: 24,
+                opacity: 0,
+                interactive: true
+            }).addTo(state.driverMap);
+            state.driverHitPolyline.on('click', onDriverRouteClick);
         } else {
             state.driverMap.setView([lat, lng], 14);
             state.driverMarker.setLatLng([lat, lng]);
@@ -3090,11 +4086,13 @@ function initDriverInterface(driver) {
                     weight: 3.5,
                     opacity: 0.60
                 }).addTo(state.driverMap);
+                state.driverCompletedPolyline.on('click', onDriverRouteClick);
             } else {
                 state.driverCompletedPolyline.setLatLngs(completedCoords);
                 state.driverCompletedPolyline.setStyle({ color: pastel, weight: 3.5, opacity: 0.60 });
             }
-            const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
+            const allStopsDone = driver.routeSequence && driver.routeSequence.length > 0 && driver.routeSequence.every(s => s.status === 'COMPLETED');
+            const activeLineCoords = allStopsDone ? [] : (activeCoords.length > 0 ? activeCoords : (upcomingCoords.length > 0 ? upcomingCoords : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : []))));
             state.driverPolyline.setLatLngs(activeLineCoords);
             state.driverPolyline.setStyle({
                 color: polyColor,
@@ -3103,7 +4101,6 @@ function initDriverInterface(driver) {
                 dashArray: '8, 12',
                 className: 'pulsing-route-vector'
             });
-            state.driverPolyline.setPopupContent(popupContent);
 
             if (!state.driverUpcomingPolyline) {
                 state.driverUpcomingPolyline = L.polyline(upcomingCoords, {
@@ -3111,12 +4108,28 @@ function initDriverInterface(driver) {
                     weight: 3.8,
                     opacity: 0.85
                 }).addTo(state.driverMap);
+                state.driverUpcomingPolyline.on('click', onDriverRouteClick);
             } else {
                 state.driverUpcomingPolyline.setLatLngs(upcomingCoords);
                 state.driverUpcomingPolyline.setStyle({ color: polyColor, weight: 3.8, opacity: 0.85 });
             }
+
+            const fullDriverRoute = (driver.polyline && driver.polyline.length > 1) ? driver.polyline : activeLineCoords;
+            if (!state.driverHitPolyline) {
+                state.driverHitPolyline = L.polyline(fullDriverRoute, {
+                    color: '#000000',
+                    weight: 24,
+                    opacity: 0,
+                    interactive: true
+                }).addTo(state.driverMap);
+                state.driverHitPolyline.on('click', onDriverRouteClick);
+            } else {
+                state.driverHitPolyline.setLatLngs(fullDriverRoute);
+            }
             state.driverMap.invalidateSize();
         }
+
+        applyDriverMapOrientation();
 
         // Render numbered sequence badges above stops
         renderDriverSequenceMarkers(driver);
@@ -3487,6 +4500,22 @@ window.updateTacticalDriverMarker = updateTacticalDriverMarker;
 window.computeTurnByTurnInstructions = computeTurnByTurnInstructions;
 window.updateTurnByTurnNavBanner = updateTurnByTurnNavBanner;
 window.startDriverTelemetryStream = startDriverTelemetryStream;
+window.openRouteInfoPanel = openRouteInfoPanel;
+window.openDestinationInfoModal = openDestinationInfoModal;
+window.submitDestinationUnreachableReport = submitDestinationUnreachableReport;
+window.fetchAndRenderOfficerAlerts = fetchAndRenderOfficerAlerts;
+window.renderOfficerAlertsList = renderOfficerAlertsList;
+window.acknowledgeOfficerAlert = acknowledgeOfficerAlert;
+window.toggleDriverMapOrientation = toggleDriverMapOrientation;
+window.applyDriverMapOrientation = applyDriverMapOrientation;
+window.toggleMultiNodeSelectionMode = toggleMultiNodeSelectionMode;
+window.handleOfficerMapDoubleClick = handleOfficerMapDoubleClick;
+window.renderPendingMissionMarkers = renderPendingMissionMarkers;
+window.renderPendingMissionNodes = renderPendingMissionNodes;
+window.removePendingMissionNode = removePendingMissionNode;
+window.clearAllPendingMissionMarkers = clearAllPendingMissionMarkers;
+window.previewPendingMissionQuantumOrder = previewPendingMissionQuantumOrder;
+window.confirmAndAssignMission = confirmAndAssignMission;
 
 // Immediate bind check if DOM is already ready
 if (document.readyState === 'complete' || document.readyState === 'interactive') {

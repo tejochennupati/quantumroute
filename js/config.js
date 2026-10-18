@@ -3921,12 +3921,21 @@ const ROUTING_CONFIG = {
     enableOSRM: true
 };
 
+function getRiverCenterlineLat(lng) {
+    if (lng <= 80.612) {
+        return 16.5062 - (lng - 80.612) * 0.24;
+    } else if (lng <= 80.6235) {
+        return 16.5062 - (lng - 80.612) * 0.713;
+    } else {
+        return 16.4980 - (lng - 80.6235) * 0.445;
+    }
+}
+
 function isSouthOfRiver(coord) {
     const lat = Number(coord[0]);
     const lng = Number(coord[1]);
-    if (lng < 80.612) return lat < 16.504;
-    if (lng <= 80.630) return lat < 16.496;
-    return lat < 16.450;
+    const riverLat = getRiverCenterlineLat(lng);
+    return lat < riverLat;
 }
 
 function findNearestRoadNode(coord, mustBeSouth = null) {
@@ -4158,12 +4167,32 @@ function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
         );
         if (!hasBridgePoint) {
             const bridgeChoice = preferBridge || (Math.hypot(sLat - 16.5062, sLng - 80.6120) < Math.hypot(sLat - 16.4980, sLng - 80.6235) ? 'BARRAGE' : 'VARADHI');
+            const northEntry = bridgeChoice === 'BARRAGE' ? 'BARRAGE_NORTH' : 'VARADHI_NORTH';
+            const southExit = 'TADEPALLI';
             const bridgeSpan = bridgeChoice === 'BARRAGE' 
                 ? [ROAD_NETWORK_NODES.BARRAGE_NORTH, ROAD_NETWORK_NODES.BARRAGE_APPROACH_N, ROAD_NETWORK_NODES.BARRAGE_MID, ROAD_NETWORK_NODES.BARRAGE_HEAD_S, ROAD_NETWORK_NODES.BARRAGE_SOUTH, ROAD_NETWORK_NODES.TADEPALLI]
                 : [ROAD_NETWORK_NODES.VARADHI_NORTH, ROAD_NETWORK_NODES.VARADHI_SPAN_N, ROAD_NETWORK_NODES.VARADHI_MID, ROAD_NETWORK_NODES.VARADHI_SPAN_S, ROAD_NETWORK_NODES.VARADHI_SOUTH, ROAD_NETWORK_NODES.TADEPALLI];
             
-            const orderedSpan = sSouth ? bridgeSpan.slice().reverse() : bridgeSpan;
-            return densifyRoadCoordinates([[sLat, sLng], ...orderedSpan, [eLat, eLng]], 0.08);
+            const startLeg = sSouth ? findShortestRoadGraphPath(startNodeKey, southExit) : findShortestRoadGraphPath(startNodeKey, northEntry);
+            const bridgeLeg = sSouth ? bridgeSpan.slice().reverse() : bridgeSpan;
+            const endLeg = sSouth ? findShortestRoadGraphPath(northEntry, endNodeKey) : findShortestRoadGraphPath(southExit, endNodeKey);
+            
+            const assembled = [[sLat, sLng]];
+            if (startLeg) {
+                for (const pt of startLeg) {
+                    if (Math.hypot(pt[0] - assembled[assembled.length - 1][0], pt[1] - assembled[assembled.length - 1][1]) > 0.0003) assembled.push(pt);
+                }
+            }
+            for (const pt of bridgeLeg) {
+                if (Math.hypot(pt[0] - assembled[assembled.length - 1][0], pt[1] - assembled[assembled.length - 1][1]) > 0.0003) assembled.push(pt);
+            }
+            if (endLeg) {
+                for (const pt of endLeg) {
+                    if (Math.hypot(pt[0] - assembled[assembled.length - 1][0], pt[1] - assembled[assembled.length - 1][1]) > 0.0003) assembled.push(pt);
+                }
+            }
+            if (Math.hypot(eLat - assembled[assembled.length - 1][0], eLng - assembled[assembled.length - 1][1]) > 0.0003) assembled.push([eLat, eLng]);
+            return densifyRoadCoordinates(assembled, 0.08);
         }
     }
 
@@ -4394,6 +4423,86 @@ function generate6DriverFleet() {
     return generateDriverFleet();
 }
 
+/**
+ * Rigorous Destination Accessibility & Water Boundary Validator (Spec 7 & Test D)
+ * Distinguishes geographic clicked points from reachable road network access points.
+ * Explicitly rejects locations placed in the Krishna River water basin (away from bridges)
+ * or disconnected (>850m) from the municipal road graph.
+ */
+function validateDestinationAccessibility(coord) {
+    if (!coord || !Array.isArray(coord) || coord.length < 2) {
+        return { isAccessible: false, reason: 'INVALID_COORDINATES', message: 'Coordinate is invalid or undefined.' };
+    }
+    const lat = Number(coord[0]);
+    const lng = Number(coord[1]);
+    if (isNaN(lat) || isNaN(lng)) {
+        return { isAccessible: false, reason: 'NAN_COORDINATES', message: 'Coordinate values are not numeric.' };
+    }
+    // Check bounds: Vijayawada emergency logistics sector
+    if (lat < 16.30 || lat > 16.70 || lng < 80.40 || lng > 80.90) {
+        return { isAccessible: false, reason: 'OUT_OF_BOUNDS', message: 'Location is outside operational Vijayawada disaster grid.' };
+    }
+
+    // Check Krishna River water body (without bridge deck access)
+    // River water channel envelope:
+    // - West of Barrage (80.540 to 80.612): lat 16.501 to 16.520
+    // - Barrage to Varadhi (80.612 to 80.630): lat 16.493 to 16.506
+    // - East of Varadhi (80.630 to 80.750): river channel along centerline
+    let isRiverWater = false;
+    if (lng >= 80.540 && lng < 80.612) {
+        isRiverWater = (lat >= 16.501 && lat <= 16.520);
+    } else if (lng >= 80.612 && lng <= 80.630) {
+        isRiverWater = (lat >= 16.493 && lat <= 16.506);
+    } else if (lng > 80.630 && lng <= 80.750) {
+        const cLat = getRiverCenterlineLat(lng);
+        isRiverWater = (lat >= cLat - 0.0075 && lat <= cLat + 0.0075);
+    }
+
+    if (isRiverWater) {
+        // Prakasam Barrage deck: [16.5062, 80.6120]
+        const distBarrage = Math.hypot(lat - 16.5062, lng - 80.6120);
+        // Varadhi Bridge deck: [16.4980, 80.6235]
+        const distVaradhi = Math.hypot(lat - 16.4980, lng - 80.6235);
+        // If inside river corridor and more than ~350m (0.0032 deg) from both bridge decks: it is submerged in river water
+        if (distBarrage > 0.0032 && distVaradhi > 0.0032) {
+            return {
+                isAccessible: false,
+                reason: 'WATER_BODY_UNREACHABLE',
+                message: 'Destination is located inside the Krishna River water basin without direct bridge or road access. Impassable for relief trucks.'
+            };
+        }
+    }
+
+    // Find nearest road node on connected road network
+    const sSouth = isSouthOfRiver([lat, lng]);
+    const nearestKey = findNearestRoadNode([lat, lng], sSouth);
+    const nearestPoint = ROAD_NETWORK_NODES[nearestKey];
+    if (!nearestPoint) {
+        return { isAccessible: false, reason: 'NO_ROAD_GRAPH_NODE', message: 'No road node found on the municipal grid.' };
+    }
+
+    const distToRoadDeg = Math.hypot(lat - nearestPoint[0], lng - nearestPoint[1]);
+    const distToRoadMeters = distToRoadDeg * 111000;
+
+    // Disconnected / off-road threshold: > 850m
+    if (distToRoadMeters > 850) {
+        return {
+            isAccessible: false,
+            reason: 'NO_ROAD_CONNECTION',
+            message: `Destination is ${Math.round(distToRoadMeters)}m from nearest drivable corridor (>850m threshold). Disconnected from municipal road network.`
+        };
+    }
+
+    return {
+        isAccessible: true,
+        reason: 'ROAD_CONNECTED',
+        message: 'Verified accessible municipal road corridor.',
+        roadAccessPoint: nearestPoint,
+        nearestNodeKey: nearestKey,
+        distanceToRoadMeters: Math.round(distToRoadMeters)
+    };
+}
+
 if (typeof window !== 'undefined') {
     window.TRUCK_TRANSPORT_PROFILE = TRUCK_TRANSPORT_PROFILE;
     window.getRoadSnappedPath = getRoadSnappedPath;
@@ -4410,6 +4519,8 @@ if (typeof window !== 'undefined') {
     window.ROAD_NETWORK_NODES = ROAD_NETWORK_NODES;
     window.ROAD_NETWORK_EDGES = ROAD_NETWORK_EDGES;
     window.generateDriverFleet = generateDriverFleet;
+    window.validateDestinationAccessibility = validateDestinationAccessibility;
+    window.getRiverCenterlineLat = getRiverCenterlineLat;
 }
 
 // Module exports for Node.js backend integration & tests
@@ -4432,6 +4543,7 @@ if (typeof module !== 'undefined' && module.exports) {
         ROAD_GRAPH,
         ROUTING_CONFIG,
         getRoadSegmentMeta,
+        getRiverCenterlineLat,
         isSouthOfRiver,
         findNearestRoadNode,
         getRoadSnappedPath,
@@ -4440,7 +4552,8 @@ if (typeof module !== 'undefined' && module.exports) {
         generate6DriverFleet,
         isRescueMission,
         STREET_LANDMARKS,
-        resolveStreetLocation
+        resolveStreetLocation,
+        validateDestinationAccessibility
     };
 }
 
