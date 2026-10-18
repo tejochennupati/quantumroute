@@ -706,7 +706,7 @@
                 </div>
 
                 <!-- MASTER TACTICAL DISPATCH MAP (TAP-TO-CREATE / REASSIGN MISSION NODES) -->
-                <div id="officer-tactical-map-view" class="flex-1 relative bg-[#010409] hidden">
+                <div id="officer-tactical-map-view" class="flex-1 h-full w-full relative bg-[#010409] hidden flex-col">
                     <div id="officer-master-tactical-map" class="h-full w-full"></div>
                     
                     <!-- Interactive Guidance Overlay Pill -->
@@ -717,6 +717,20 @@
                         <div>
                             <p class="text-[9px] text-[#00f0ff] uppercase tracking-wider font-extrabold font-hud">Tactical Grid Command</p>
                             <p class="text-xs font-medium text-white">Click anywhere on the map to <span class="text-[#00f0ff] font-bold">Tap-to-Spawn Node</span> or <span class="text-amber-400 font-bold">Reassign Vector</span></p>
+                        </div>
+                    </div>
+
+                    <!-- Live Turn-by-Turn Navigation Monitor Banner (Google Maps Style) -->
+                    <div id="officer-tactical-nav-banner" class="absolute top-20 left-4 z-20 hidden md:flex items-center space-x-3 bg-[#0d1117]/95 backdrop-blur-xl border border-emerald-500/50 px-4 py-2.5 rounded-xl shadow-2xl">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold" id="officer-nav-icon-box">
+                            <i class="fa-solid fa-diamond-turn-right text-emerald-400" id="officer-nav-icon"></i>
+                        </div>
+                        <div>
+                            <div class="flex items-center space-x-2">
+                                <span class="text-[9px] text-emerald-400 uppercase tracking-wider font-extrabold font-hud" id="officer-nav-unit">Unit #1: Rajesh</span>
+                                <span class="text-[10px] text-emerald-300 font-bold font-mono" id="officer-nav-dist">280m</span>
+                            </div>
+                            <p class="text-xs font-semibold text-white truncate max-w-sm" id="officer-nav-step">Continue on Prakasam Barrage toward Tadepalli</p>
                         </div>
                     </div>
 
@@ -813,6 +827,24 @@
             </div>
 
             <div class="flex-1 bg-[#010409] relative">
+                <!-- GOOGLE MAPS STYLE LIVE TURN-BY-TURN NAVIGATION BANNER -->
+                <div id="driver-turn-nav-banner" class="driver-nav-banner-container pointer-events-auto">
+                    <div class="nav-maneuver-icon-box" id="drv-nav-icon-box">
+                        <i class="fa-solid fa-diamond-turn-right text-emerald-400" id="drv-nav-icon"></i>
+                    </div>
+                    <div class="nav-maneuver-text-box">
+                        <div class="flex items-center space-x-2">
+                            <span class="nav-maneuver-dist" id="drv-nav-dist">250 m</span>
+                            <span class="nav-maneuver-step" id="drv-nav-step">Turn right onto Prakasam Barrage</span>
+                        </div>
+                        <p class="nav-maneuver-sub" id="drv-nav-sub">Toward Tadepalli High Ground Shelter • NH-65 Corridor</p>
+                    </div>
+                    <div class="nav-stats-pill">
+                        <div class="eta-val" id="drv-nav-eta-badge">14 MIN</div>
+                        <div class="dist-val" id="drv-nav-dist-badge">4.2 km</div>
+                    </div>
+                </div>
+
                 <div id="driver-map"></div>
 
                 <!-- Floating Mission Legs Drawer Trigger & Panel (Driver HUD) -->

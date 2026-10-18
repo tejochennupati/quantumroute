@@ -27,6 +27,7 @@ const state = {
     wsConnected: false,
     simulatedOffline: false
 };
+window.state = state;
 
 // ==========================================
 // 1. INITIALIZATION & DATA HYDRATION
@@ -288,15 +289,45 @@ function handleIncomingSocketMessage(data) {
         if (driver) {
             driver.isObstructed = true;
             driver.polyline = data.polyline;
+            if (data.legs) driver.legs = data.legs;
+            if (data.driver) Object.assign(driver, data.driver);
             driver.roadColor = '#ef4444';
             updateMiniMapPolyline(driver.id);
             updateDriverCardUI(driver);
-            if (state.selectedDriverId === driver.id && state.driverPolyline) {
-                state.driverPolyline.setLatLngs(driver.polyline);
-                state.driverPolyline.setStyle({ color: '#ef4444', dashArray: '6, 6' });
+            renderTacticalMasterMapLayers();
+            if (state.selectedDriverId === driver.id) {
+                if (state.fullMap) expandDriverMap(driver.id);
+                if (state.driverPolyline) {
+                    state.driverPolyline.setLatLngs(driver.polyline);
+                    state.driverPolyline.setStyle({ color: '#ef4444', dashArray: '8, 12' });
+                }
                 updateDriverNavigationHUD(driver);
             }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                initDriverInterface(driver);
+            }
+        }
+    } else if (data.type === 'ROUTE_OBSTRUCTION_CLEARED') {
+        const driver = state.fleet.find(d => d.id === data.driverId);
+        if (driver) {
+            driver.isObstructed = false;
+            if (data.polyline) driver.polyline = data.polyline;
+            if (data.legs) driver.legs = data.legs;
+            if (data.driver) Object.assign(driver, data.driver);
+            driver.roadColor = driver.color || '#00f0ff';
+            updateMiniMapPolyline(driver.id);
+            updateDriverCardUI(driver);
             renderTacticalMasterMapLayers();
+            if (state.selectedDriverId === driver.id) {
+                if (state.fullMap) expandDriverMap(driver.id);
+                if (state.driverPolyline) {
+                    state.driverPolyline.setStyle({ color: driver.color || '#00f0ff', dashArray: '8, 12' });
+                }
+                updateDriverNavigationHUD(driver);
+            }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                initDriverInterface(driver);
+            }
         }
     } else if (data.type === 'DESTINATION_REASSIGNED') {
         const driver = state.fleet.find(d => d.id === data.driverId);
@@ -321,15 +352,20 @@ function handleIncomingSocketMessage(data) {
             populateTextDispatchDriverSelect();
         }
     } else if (data.type === 'ROUTE_SEQUENCE_UPDATED') {
-        const driver = state.fleet.find(d => d.id === data.driverId);
+        const dId = data.driverId || (data.driver && data.driver.id);
+        const driver = state.fleet.find(d => d.id === dId);
         if (driver) {
-            driver.routeSequence = data.routeSequence;
-            driver.polyline = data.polyline;
-            driver.legs = data.legs;
-            driver.totalEtaMinutes = data.totalEtaMinutes;
-            driver.totalFuelBurnLiters = data.totalFuelBurnLiters;
-            driver.roadColor = data.roadColor;
-            driver.node = data.targetNodeName;
+            if (data.driver) {
+                Object.assign(driver, data.driver);
+            }
+            if (data.routeSequence) driver.routeSequence = data.routeSequence;
+            if (data.polyline) driver.polyline = data.polyline;
+            if (data.legs) driver.legs = data.legs;
+            if (data.totalEtaMinutes !== undefined) driver.totalEtaMinutes = data.totalEtaMinutes;
+            if (data.totalFuelBurnLiters !== undefined) driver.totalFuelBurnLiters = data.totalFuelBurnLiters;
+            if (data.roadColor) driver.roadColor = data.roadColor;
+            if (data.targetNodeName) driver.node = data.targetNodeName;
+
             updateDriverCardUI(driver);
             updateMiniMapPolyline(driver.id);
             if (state.selectedDriverId === driver.id && state.driverPolyline) {
@@ -338,6 +374,10 @@ function handleIncomingSocketMessage(data) {
                 renderDriverSequenceMarkers(driver);
                 updateDriverNavigationHUD(driver);
             }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                initDriverInterface(driver);
+            }
+            updateTurnByTurnNavBanner(driver);
             renderTacticalMasterMapLayers();
         }
     } else if (data.type === 'ROUTE_CLEARED') {
@@ -376,9 +416,59 @@ function handleIncomingSocketMessage(data) {
         }
     } else if (data.type === 'QUANTUM_SOLVER_EXECUTED') {
         audioEngine.playBeep(920, 0.2);
+    } else if (data.type === 'STOP_CLEARED') {
+        const driver = state.fleet.find(d => d.id === data.driverId);
+        if (driver) {
+            Object.assign(driver, data.driver);
+            offlineStore.saveFleet(state.fleet);
+            updateDriverCardUI(driver);
+            updateMiniMapPolyline(driver.id);
+            if (state.selectedDriverId === driver.id) {
+                populateExpandedSidebar(driver);
+                renderDriverSequenceMarkers(driver);
+                updateDriverNavigationHUD(driver);
+                renderDriverLegsList(driver);
+            }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                initDriverInterface(driver);
+            }
+            updateTurnByTurnNavBanner(driver);
+            renderTacticalMasterMapLayers();
+            audioEngine.playBeep(880, 0.15);
+            showBroadcastToast(`Operative ${driver.name} reached and cleared stop! Next vector engaged.`);
+        }
     } else if (data.type === 'AUDIO_EMERGENCY_BROADCAST') {
         audioEngine.triggerCommandAudioBroadcast(data.directive);
         showBroadcastToast(data.directive);
+    } else if (data.type === 'VEHICLE_TELEMETRY_UPDATE') {
+        const driver = state.fleet.find(d => d.id === data.driverId);
+        if (driver) {
+            driver.currentPos = data.currentPos;
+            driver.speed = data.speed;
+            driver.fuelBurnRate = data.fuelBurnRate;
+            driver.heading = data.heading;
+            if (data.crashSensor) driver.crashSensor = data.crashSensor;
+            driver.lastUpdated = data.timestamp || new Date().toISOString();
+
+            updateTacticalDriverMarker(driver);
+            updateMiniMapPolyline(driver.id);
+            if (state.selectedDriverId === driver.id) {
+                if (state.fullMapMarker) state.fullMapMarker.setLatLng(driver.currentPos);
+                updateTurnByTurnNavBanner(driver);
+            }
+            if (state.user && state.user.role === 'DRIVER' && state.user.id === driver.id) {
+                if (state.driverMarker) {
+                    state.driverMarker.setLatLng(driver.currentPos);
+                }
+                updateTurnByTurnNavBanner(driver);
+            }
+
+            document.querySelectorAll(`.heading-arrow-${driver.id}`).forEach(el => {
+                if (driver.heading !== undefined) {
+                    el.style.transform = `rotate(${driver.heading}deg)`;
+                }
+            });
+        }
     }
 }
 
@@ -523,6 +613,367 @@ function filterUnits() {
     }
 }
 
+// 10 Pastel Tint Palettes for Completed Route Segments (Spec 2)
+const DRIVER_PASTEL_COLORS = {
+    1: '#67e8f9',  // Unit 1 (Cyan pastel)
+    2: '#fde047',  // Unit 2 (Yellow pastel)
+    3: '#d8b4fe',  // Unit 3 (Purple pastel)
+    4: '#86efac',  // Unit 4 (Lime green pastel)
+    5: '#fdba74',  // Unit 5 (Orange pastel)
+    6: '#f472b6',  // Unit 6 (Hot pink pastel)
+    7: '#99f6e4',  // Unit 7 (Turquoise pastel)
+    8: '#fca5a5',  // Unit 8 (Coral pastel)
+    9: '#f0abfc',  // Unit 9 (Magenta pastel)
+    10: '#a7f3d0'  // Unit 10 (Spring green pastel)
+};
+
+function getDriverPastelColor(color, driverId) {
+    if (driverId && DRIVER_PASTEL_COLORS[driverId]) {
+        return DRIVER_PASTEL_COLORS[driverId];
+    }
+    return '#94a3b8';
+}
+
+// ==========================================
+// 1.2 WHATSAPP-STYLE LIVE PROFILE MARKER & HEADING (SPEC 1)
+// ==========================================
+function calculateHeading(fromCoord, toCoord) {
+    if (!fromCoord || !toCoord) return 0;
+    const lat1 = fromCoord[0] * Math.PI / 180;
+    const lat2 = toCoord[0] * Math.PI / 180;
+    const dLng = (toCoord[1] - fromCoord[1]) * Math.PI / 180;
+    const y = Math.sin(dLng) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+    const deg = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    return Math.round(deg);
+}
+
+function calculateRoadHeading(driver) {
+    if (!driver || !driver.currentPos) return 0;
+    if (driver.heading !== undefined && driver.heading !== null) {
+        return driver.heading;
+    }
+    // Compute heading toward the immediate next road point in polyline or next active node
+    if (driver.polyline && driver.polyline.length > 1) {
+        let nearestIdx = 0;
+        let minDist = Infinity;
+        for (let i = 0; i < driver.polyline.length; i++) {
+            const d = Math.hypot(driver.polyline[i][0] - driver.currentPos[0], driver.polyline[i][1] - driver.currentPos[1]);
+            if (d < minDist) {
+                minDist = d;
+                nearestIdx = i;
+            }
+        }
+        if (nearestIdx < driver.polyline.length - 1) {
+            return calculateHeading(driver.currentPos, driver.polyline[nearestIdx + 1]);
+        }
+    }
+    const nextStop = (driver.routeSequence && driver.routeSequence.find(s => s.status !== 'COMPLETED')) || { lat: driver.targetPos[0], lng: driver.targetPos[1] };
+    if (nextStop && nextStop.lat) {
+        return calculateHeading(driver.currentPos, [nextStop.lat, nextStop.lng]);
+    }
+    return 0;
+}
+
+function createLiveProfileMarkerIcon(driver, headingDeg = null) {
+    const color = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const initials = (driver.name || 'Unit').substring(0, 2).toUpperCase();
+    
+    let heading = headingDeg;
+    if (heading === null || heading === undefined) {
+        heading = calculateRoadHeading(driver);
+    }
+
+    return L.divIcon({
+        className: 'whatsapp-live-marker-wrapper',
+        html: `
+            <div class="whatsapp-live-beacon" id="beacon-${driver.id}">
+                <div class="whatsapp-heading-arrow heading-arrow-${driver.id}" id="heading-arrow-${driver.id}" style="transform: rotate(${heading}deg);">
+                    <div class="whatsapp-arrow-tip" style="border-bottom-color: ${color}; color: ${color}; filter: drop-shadow(0 0 6px ${color});"></div>
+                </div>
+                <div class="whatsapp-avatar-frame" style="border-color: ${color}; box-shadow: 0 0 14px ${color}80;">
+                    <span>${initials}</span>
+                    <span class="whatsapp-unit-badge" style="color: ${color}; border-color: ${color};">#${driver.id}</span>
+                </div>
+                <div class="whatsapp-live-pulse" style="border-color: ${color};"></div>
+            </div>
+        `,
+        iconSize: [46, 46],
+        iconAnchor: [23, 23]
+    });
+}
+
+function updateTacticalDriverMarker(driver) {
+    if (!state.tacticalMasterMap) return;
+    const driverKey = `driver-${driver.id}`;
+    let marker = state.tacticalMarkers[driverKey];
+    const heading = (driver.heading !== undefined) ? driver.heading : calculateRoadHeading(driver);
+
+    if (marker && driver.currentPos) {
+        marker.setLatLng(driver.currentPos);
+    } else if (!marker && driver.currentPos) {
+        const truckBeacon = createLiveProfileMarkerIcon(driver, heading);
+        marker = L.marker(driver.currentPos, { icon: truckBeacon }).addTo(state.tacticalMasterMap);
+        marker.on('click', () => {
+            state.selectedDriverId = driver.id;
+            updateTurnByTurnNavBanner(driver);
+        });
+        state.tacticalMarkers[driverKey] = marker;
+    }
+
+    // Update all matching heading arrows directly
+    document.querySelectorAll(`.heading-arrow-${driver.id}`).forEach(el => {
+        el.style.transform = `rotate(${heading}deg)`;
+    });
+
+    // Update tactical map polyline segments in-place
+    const polyKey = `poly-${driver.id}`;
+    const compPolyKey = `poly-${driver.id}-completed`;
+    const { completedCoords, activeCoords } = splitRouteSegments(driver);
+
+    if (state.tacticalPolylines && state.tacticalPolylines[polyKey]) {
+        state.tacticalPolylines[polyKey].setLatLngs(activeCoords.length > 0 ? activeCoords : (driver.polyline || []));
+    }
+    if (state.tacticalPolylines && state.tacticalPolylines[compPolyKey]) {
+        state.tacticalPolylines[compPolyKey].setLatLngs(completedCoords);
+    }
+
+    if (state.selectedDriverId === driver.id) {
+        updateTurnByTurnNavBanner(driver);
+    }
+}
+
+// ==========================================
+// 1.3 GOOGLE MAPS-STYLE TURN-BY-TURN DIRECTIONS (SPEC 2 & SPEC 4)
+// ==========================================
+function computeTurnByTurnInstructions(driver) {
+    if (!driver) return {
+        icon: 'fa-diamond-turn-right',
+        distanceText: '0 m',
+        instruction: 'Standby for Dispatch Directive',
+        subInstruction: 'Awaiting route allocation from Command Center',
+        etaMinutes: 0,
+        distanceKm: 0
+    };
+
+    const activeStop = (driver.routeSequence && driver.routeSequence.find(s => s.status !== 'COMPLETED')) || (driver.routeSequence && driver.routeSequence[0]);
+    const seqNum = activeStop ? (activeStop.seq || 1) : 1;
+    const targetName = (activeStop && activeStop.name) ? activeStop.name : (driver.node || 'Target Emergency Sector');
+    const activeLeg = (driver.legs && driver.legs.find(l => l.status !== 'COMPLETED')) || (driver.legs && driver.legs[0]);
+    const legDistKm = activeLeg ? activeLeg.distanceKm : (driver.totalDistanceKm || 2.4);
+    const etaMins = activeLeg ? activeLeg.etaMinutes : (driver.totalEtaMinutes || 12);
+
+    const distText = legDistKm < 1.0 ? `${Math.round(legDistKm * 1000)}m` : `${legDistKm}km`;
+    const lowerTarget = targetName.toLowerCase();
+    let icon = 'fa-diamond-turn-right';
+    let instruction = `Continue straight for ${distText} toward Node ${seqNum}`;
+    let subInstruction = `Heavy truck relief vector to ${targetName}`;
+
+    if (driver.isObstructed) {
+        icon = 'fa-triangle-exclamation';
+        instruction = `DETOUR ENGAGED: Quantum bypass in ${distText}`;
+        subInstruction = `Bypassing high-water hazard toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('barrage') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.5062, driver.currentPos[1] - 80.6120) < 0.015)) {
+        icon = 'fa-bridge';
+        instruction = `Cross Prakasam Barrage Bridge Span in ${distText}`;
+        subInstruction = `Verified river crossing deck toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('varadhi') || (driver.currentPos && Math.hypot(driver.currentPos[0] - 16.4980, driver.currentPos[1] - 80.6235) < 0.015)) {
+        icon = 'fa-bridge';
+        instruction = `Merge onto Kanaka Durga Varadhi NH-16 in ${distText}`;
+        subInstruction = `Heavy truck expressway bridge toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('benz') || lowerTarget.includes('circle')) {
+        icon = 'fa-arrow-turn-right';
+        instruction = `Turn right in ${distText} at Benz Circle onto MG Road`;
+        subInstruction = `Major arterial corridor toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('tadepalli')) {
+        icon = 'fa-arrow-turn-left';
+        instruction = `Turn left in ${distText} toward Tadepalli Relief Zone`;
+        subInstruction = `Old Toll Gate road toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('gannavaram') || lowerTarget.includes('airbase')) {
+        icon = 'fa-turn-up';
+        instruction = `Continue straight for ${distText} on NH-16 toward Airbase`;
+        subInstruction = `National Highway cargo vector toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('mangalagiri')) {
+        icon = 'fa-arrow-turn-left';
+        instruction = `Follow NH-16 South for ${distText} toward Mangalagiri`;
+        subInstruction = `Southern bypass toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('gunadala') || lowerTarget.includes('eluru')) {
+        icon = 'fa-turn-up';
+        instruction = `Follow Eluru Road for ${distText} toward Gunadala`;
+        subInstruction = `High-capacity thoroughfare toward Node ${seqNum}: ${targetName}`;
+    } else if (lowerTarget.includes('autonagar')) {
+        icon = 'fa-arrow-turn-right';
+        instruction = `Turn onto Bandar Road in ${distText} toward Autonagar`;
+        subInstruction = `Logistics base vector toward Node ${seqNum}: ${targetName}`;
+    } else if (driver.missionStatus === 'DELIVERED') {
+        icon = 'fa-circle-check';
+        instruction = `Mission Completed at Node ${seqNum}: ${targetName}`;
+        subInstruction = 'All relief cargo delivered. Ready for next operational directive.';
+    }
+
+    return {
+        icon,
+        distanceText: distText,
+        instruction,
+        subInstruction,
+        etaMinutes: etaMins,
+        distanceKm: legDistKm
+    };
+}
+
+function updateTurnByTurnNavBanner(driver) {
+    if (!driver) return;
+    const nav = computeTurnByTurnInstructions(driver);
+
+    // 1. Driver GPS HUD Banner
+    const drvIcon = document.getElementById('drv-nav-icon');
+    const drvDist = document.getElementById('drv-nav-dist');
+    const drvStep = document.getElementById('drv-nav-step');
+    const drvSub = document.getElementById('drv-nav-sub');
+    const drvEta = document.getElementById('drv-nav-eta-badge');
+    const drvDistBadge = document.getElementById('drv-nav-dist-badge');
+
+    if (drvIcon) drvIcon.className = `fa-solid ${nav.icon} text-emerald-400 text-xl`;
+    if (drvDist) drvDist.innerText = nav.distanceText;
+    if (drvStep) drvStep.innerText = nav.instruction;
+    if (drvSub) drvSub.innerText = nav.subInstruction;
+    if (drvEta) drvEta.innerText = `${Math.round(nav.etaMinutes)} MIN`;
+    if (drvDistBadge) drvDistBadge.innerText = `${nav.distanceKm} km`;
+
+    // 2. Officer Tactical Monitor Banner
+    const offUnit = document.getElementById('officer-nav-unit');
+    const offDist = document.getElementById('officer-nav-dist');
+    const offStep = document.getElementById('officer-nav-step');
+    const offIcon = document.getElementById('officer-nav-icon');
+
+    if (offUnit) offUnit.innerText = `Unit #${driver.id}: ${driver.name}`;
+    if (offDist) offDist.innerText = nav.distanceText;
+    if (offStep) offStep.innerText = nav.instruction;
+    if (offIcon) offIcon.className = `fa-solid ${nav.icon} text-emerald-400`;
+}
+
+function startDriverTelemetryStream(driver) {
+    if (state.driverTelemetryInterval) clearInterval(state.driverTelemetryInterval);
+    state.driverTelemetryInterval = setInterval(() => {
+        if (state.wsConnected && state.ws && state.ws.readyState === WebSocket.OPEN) {
+            state.ws.send(JSON.stringify({
+                type: 'VEHICLE_TELEMETRY',
+                driverId: driver.id,
+                currentPos: driver.currentPos,
+                speed: driver.speed || 38,
+                heading: driver.heading || 0,
+                fuelBurnRate: 0.138,
+                crashSensor: driver.crashSensor
+            }));
+        }
+    }, 2500);
+}
+
+function splitRouteSegments(driver) {
+    const completedCoords = [];
+    const activeCoords = [];
+    const upcomingCoords = [];
+
+    if (!driver) return { completedCoords, activeCoords, upcomingCoords };
+
+    if (driver.legs && driver.legs.length > 0) {
+        let activeIdx = driver.legs.findIndex(l => l.status === 'IN_PROGRESS');
+        if (activeIdx === -1) {
+            activeIdx = driver.legs.findIndex(l => l.status !== 'COMPLETED');
+        }
+
+        driver.legs.forEach((leg, idx) => {
+            if (!leg.path || leg.path.length === 0) return;
+            if (leg.status === 'COMPLETED' || (activeIdx !== -1 && idx < activeIdx)) {
+                // Completed past segment (faded pastel)
+                if (completedCoords.length > 0) {
+                    for (let p = 1; p < leg.path.length; p++) completedCoords.push(leg.path[p]);
+                } else {
+                    completedCoords.push(...leg.path);
+                }
+            } else if (idx === activeIdx && leg.status !== 'COMPLETED') {
+                // Current active segment: split at vehicle's current road position
+                let nearestIdx = 0;
+                if (driver.currentPos && leg.path.length > 1) {
+                    let minDist = Infinity;
+                    for (let p = 0; p < leg.path.length; p++) {
+                        const d = Math.hypot(leg.path[p][0] - driver.currentPos[0], leg.path[p][1] - driver.currentPos[1]);
+                        if (d < minDist) {
+                            minDist = d;
+                            nearestIdx = p;
+                        }
+                    }
+                }
+
+                // Past points in this leg are completed
+                if (nearestIdx > 0) {
+                    const pastPortion = leg.path.slice(0, nearestIdx + 1);
+                    if (completedCoords.length > 0) {
+                        for (let p = 1; p < pastPortion.length; p++) completedCoords.push(pastPortion[p]);
+                    } else {
+                        completedCoords.push(...pastPortion);
+                    }
+                }
+
+                // Active points start strictly at driver.currentPos and continue forward to target
+                const futurePortion = leg.path.slice(nearestIdx);
+                if (driver.currentPos) {
+                    activeCoords.push(driver.currentPos);
+                    const startP = (futurePortion.length > 0 && Math.hypot(futurePortion[0][0] - driver.currentPos[0], futurePortion[0][1] - driver.currentPos[1]) < 0.0005) ? 1 : 0;
+                    for (let p = startP; p < futurePortion.length; p++) {
+                        activeCoords.push(futurePortion[p]);
+                    }
+                } else {
+                    activeCoords.push(...futurePortion);
+                }
+            } else {
+                // Upcoming future segments (vibrant solid line)
+                if (upcomingCoords.length > 0) {
+                    for (let p = 1; p < leg.path.length; p++) upcomingCoords.push(leg.path[p]);
+                } else {
+                    upcomingCoords.push(...leg.path);
+                }
+            }
+        });
+    }
+
+    if (completedCoords.length === 0 && activeCoords.length === 0 && upcomingCoords.length === 0) {
+        if (driver.polyline && driver.polyline.length > 0) {
+            const allCompleted = driver.routeSequence && driver.routeSequence.length > 0 && driver.routeSequence.every(s => s.status === 'COMPLETED');
+            if (allCompleted) {
+                completedCoords.push(...driver.polyline);
+            } else {
+                let nearestIdx = 0;
+                if (driver.currentPos && driver.polyline.length > 1) {
+                    let minDist = Infinity;
+                    for (let p = 0; p < driver.polyline.length; p++) {
+                        const d = Math.hypot(driver.polyline[p][0] - driver.currentPos[0], driver.polyline[p][1] - driver.currentPos[1]);
+                        if (d < minDist) {
+                            minDist = d;
+                            nearestIdx = p;
+                        }
+                    }
+                }
+                if (nearestIdx > 0) {
+                    completedCoords.push(...driver.polyline.slice(0, nearestIdx + 1));
+                }
+                const forwardPortion = driver.polyline.slice(nearestIdx);
+                if (driver.currentPos) {
+                    activeCoords.push(driver.currentPos);
+                    const startP = (forwardPortion.length > 0 && Math.hypot(forwardPortion[0][0] - driver.currentPos[0], forwardPortion[0][1] - driver.currentPos[1]) < 0.0005) ? 1 : 0;
+                    for (let p = startP; p < forwardPortion.length; p++) {
+                        activeCoords.push(forwardPortion[p]);
+                    }
+                } else {
+                    activeCoords.push(...forwardPortion);
+                }
+            }
+        }
+    }
+
+    return { completedCoords, activeCoords, upcomingCoords };
+}
+
 function renderDriverColorLegends() {
     const bars = [
         document.getElementById('officer-driver-legend-bar'),
@@ -640,15 +1091,31 @@ function initMiniMapsGrid() {
                     fillOpacity: 1
                 }).addTo(m);
 
-                // Glowing Active Polyline in unique color
-                const poly = L.polyline(driver.polyline || [[lat, lng], [targetLat, targetLng]], {
-                    color: driver.isObstructed ? '#ef4444' : color,
-                    weight: 3.5,
-                    opacity: 0.9,
-                    dashArray: driver.isObstructed ? '5, 5' : null
+                // Multi-stage 3-tier route rendering: pastel completed + dashed active + vibrant upcoming
+                const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
+                const pastel = getDriverPastelColor(color, driver.id);
+
+                const compPoly = L.polyline(completedCoords, {
+                    color: pastel,
+                    weight: 3.0,
+                    opacity: 0.60
                 }).addTo(m);
 
-                state.miniMaps[driver.id] = { map: m, liveMarker, targetMarker, polyline: poly };
+                const activePoly = L.polyline(activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : []))), {
+                    color: driver.isObstructed ? '#ef4444' : color,
+                    weight: 3.5,
+                    opacity: 0.95,
+                    dashArray: '8, 12',
+                    className: 'pulsing-route-vector'
+                }).addTo(m);
+
+                const upcomingPoly = L.polyline(upcomingCoords, {
+                    color: color,
+                    weight: 3.0,
+                    opacity: 0.85
+                }).addTo(m);
+
+                state.miniMaps[driver.id] = { map: m, liveMarker, targetMarker, polyline: activePoly, completedPolyline: compPoly, activePolyline: activePoly, upcomingPolyline: upcomingPoly };
             } else if (state.miniMaps[driver.id]) {
                 state.miniMaps[driver.id].map.invalidateSize();
             }
@@ -664,13 +1131,39 @@ function updateMiniMapPolyline(driverId) {
     const driver = state.fleet.find(d => d.id === driverId);
     if (!driver) return;
     const color = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const pastel = getDriverPastelColor(color, driver.id);
     const mini = state.miniMaps[driverId];
-    if (mini && mini.polyline) {
-        mini.polyline.setLatLngs(driver.polyline);
-        mini.polyline.setStyle({
-            color: driver.isObstructed ? '#ef4444' : color,
-            dashArray: driver.isObstructed ? '5, 5' : null
-        });
+    if (mini) {
+        const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
+        if (mini.completedPolyline) {
+            mini.completedPolyline.setLatLngs(completedCoords);
+            mini.completedPolyline.setStyle({ color: pastel, weight: 3.0, opacity: 0.60 });
+        }
+        const activeLayer = mini.activePolyline || mini.polyline;
+        if (activeLayer) {
+            activeLayer.setLatLngs(activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : (driver.polyline || [])));
+            activeLayer.setStyle({
+                color: driver.isObstructed ? '#ef4444' : color,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
+            });
+        }
+        if (mini.upcomingPolyline) {
+            mini.upcomingPolyline.setLatLngs(upcomingCoords);
+            mini.upcomingPolyline.setStyle({ color: color, weight: 3.0, opacity: 0.85 });
+        } else if (upcomingCoords.length > 0 && mini.map) {
+            mini.upcomingPolyline = L.polyline(upcomingCoords, {
+                color: color,
+                weight: 3.0,
+                opacity: 0.85
+            }).addTo(mini.map);
+        }
+        if (mini.liveMarker && driver.currentPos) {
+            mini.liveMarker.setLatLng(driver.currentPos);
+        }
+        if (mini.targetMarker && driver.targetPos) {
+            mini.targetMarker.setLatLng(driver.targetPos);
+        }
     }
 }
 
@@ -831,6 +1324,7 @@ function expandDriverMap(id) {
     document.getElementById('back-grid-btn').classList.remove('hidden');
 
     populateExpandedSidebar(driver);
+    updateTurnByTurnNavBanner(driver);
 
     setTimeout(() => {
         const [lat, lng] = driver.currentPos;
@@ -848,6 +1342,12 @@ function expandDriverMap(id) {
         const fuelBurnL = driver.totalFuelBurnLiters || Number((routeDistKm * 0.138).toFixed(2));
         const co2SavedKg = Number((routeDistKm * (0.185 - 0.138) * CONFIG.CARBON_COEFF_PER_LITER).toFixed(2));
 
+        const obstructionActionBtn = driver.isObstructed ? `
+            <button onclick="clearDriverObstruction(${driver.id})" class="px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold mt-1.5 w-full flex items-center justify-center gap-1.5 shadow">
+                <i class="fa-solid fa-road"></i> Reopen Corridor / Clear Blockade
+            </button>
+        ` : '';
+
         const popupContent = `
             <div class="route-popup-card">
                 <p class="font-extrabold text-white text-xs mb-1 flex items-center gap-1.5">
@@ -859,36 +1359,93 @@ function expandDriverMap(id) {
                     <div class="flex justify-between"><span>Fuel Burn Req:</span><span class="text-amber-400 font-bold">${fuelBurnL} L</span></div>
                     <div class="flex justify-between"><span>Carbon Saved:</span><span class="text-emerald-400 font-bold">${co2SavedKg} kg CO₂</span></div>
                 </div>
+                ${obstructionActionBtn}
+                <button onclick="advanceDriverLeg(${driver.id})" class="route-advance-btn">
+                    <i class="fa-solid fa-forward-step"></i> Advance to Next Stop
+                </button>
                 <button onclick="clearDriverRoute(${driver.id})" class="route-clear-btn">
                     <i class="fa-solid fa-xmark"></i> Clear Route
                 </button>
             </div>
         `;
 
+        const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
+        const pastel = getDriverPastelColor(color, driver.id);
+
+        const heading = (driver.heading !== undefined) ? driver.heading : calculateRoadHeading(driver);
+        const beaconIcon = createLiveProfileMarkerIcon(driver, heading);
+
+        const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
+
         if (!state.fullMap) {
             state.fullMap = L.map('map-full-expanded', { zoomControl: true }).setView([lat, lng], 14);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(state.fullMap);
 
-            state.fullMapMarker = L.circleMarker([lat, lng], {
-                radius: 8,
-                color: color,
-                fillColor: color,
-                fillOpacity: 1
+            state.fullMapMarker = L.marker([lat, lng], { icon: beaconIcon })
+                .addTo(state.fullMap)
+                .bindPopup(`<b>Unit #${driver.id}: ${driver.name}</b><br>${driver.node}`);
+
+            state.fullMapCompletedPoly = L.polyline(completedCoords, {
+                color: pastel,
+                weight: 3.5,
+                opacity: 0.60
             }).addTo(state.fullMap);
 
-            state.fullMapPoly = L.polyline(driver.polyline, {
+            state.fullMapPoly = L.polyline(activeLineCoords, {
                 color: polyColor,
-                weight: 4.5,
-                opacity: 0.95
+                weight: 4.8,
+                opacity: 0.95,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
             }).addTo(state.fullMap);
             state.fullMapPoly.bindPopup(popupContent);
+
+            state.fullMapUpcomingPoly = L.polyline(upcomingCoords, {
+                color: polyColor,
+                weight: 3.8,
+                opacity: 0.85
+            }).addTo(state.fullMap);
         } else {
-            state.fullMap.setView([lat, lng], 14);
             state.fullMapMarker.setLatLng([lat, lng]);
-            state.fullMapMarker.setStyle({ color: color, fillColor: color });
-            state.fullMapPoly.setLatLngs(driver.polyline);
-            state.fullMapPoly.setStyle({ color: polyColor });
+            state.fullMapMarker.setIcon(beaconIcon);
+            state.fullMapMarker.setPopupContent(`<b>Unit #${driver.id}: ${driver.name}</b><br>${driver.node}`);
+
+            if (activeLineCoords && activeLineCoords.length > 1) {
+                state.fullMap.fitBounds(L.latLngBounds(activeLineCoords), { padding: [40, 40], maxZoom: 15 });
+            } else {
+                state.fullMap.setView([lat, lng], 14);
+            }
+
+            if (!state.fullMapCompletedPoly) {
+                state.fullMapCompletedPoly = L.polyline(completedCoords, {
+                    color: pastel,
+                    weight: 3.5,
+                    opacity: 0.60
+                }).addTo(state.fullMap);
+            } else {
+                state.fullMapCompletedPoly.setLatLngs(completedCoords);
+                state.fullMapCompletedPoly.setStyle({ color: pastel, weight: 3.5, opacity: 0.60 });
+            }
+            state.fullMapPoly.setLatLngs(activeLineCoords);
+            state.fullMapPoly.setStyle({
+                color: polyColor,
+                weight: 4.8,
+                opacity: 0.95,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
+            });
             state.fullMapPoly.setPopupContent(popupContent);
+
+            if (!state.fullMapUpcomingPoly) {
+                state.fullMapUpcomingPoly = L.polyline(upcomingCoords, {
+                    color: polyColor,
+                    weight: 3.8,
+                    opacity: 0.85
+                }).addTo(state.fullMap);
+            } else {
+                state.fullMapUpcomingPoly.setLatLngs(upcomingCoords);
+                state.fullMapUpcomingPoly.setStyle({ color: polyColor, weight: 3.8, opacity: 0.85 });
+            }
             state.fullMap.invalidateSize();
         }
 
@@ -912,11 +1469,16 @@ function expandDriverMap(id) {
             const legEta = matchingLeg ? matchingLeg.etaMinutes : (stop.etaMinutes || '4.5');
             const cumulEta = matchingLeg && matchingLeg.cumulativeEtaMinutes ? matchingLeg.cumulativeEtaMinutes : (stop.cumulativeEtaMinutes || legEta);
 
+            const isCompleted = stop.status === 'COMPLETED';
+            const isCurrentTarget = !isCompleted && (seqList.find(s => s.status !== 'COMPLETED') === stop);
+            const badgeClasses = `sequence-badge ${isCompleted ? 'sequence-badge-completed' : ''} ${isCurrentTarget ? 'badge-current-target' : ''}`;
+            const badgeContent = isCompleted ? '✓' : seqNum;
+
             const seqIcon = L.divIcon({
                 className: 'node-sequence-marker',
                 html: `
-                    <div class="sequence-badge" style="border-color:${badgeColor}; background:${badgeColor}; box-shadow: 0 0 12px ${badgeColor}">
-                        ${seqNum}
+                    <div class="${badgeClasses}" style="border-color:${isCompleted ? '#10b981' : badgeColor}; background:${isCompleted ? '#0d1117' : badgeColor}; box-shadow: 0 0 12px ${isCompleted ? '#10b981' : badgeColor}">
+                        ${badgeContent}
                     </div>
                     <div class="sequence-label">${stop.name || ('Stop #' + seqNum)}</div>
                 `,
@@ -964,24 +1526,31 @@ function buildLegsHTML(driver) {
         const cumulFuel = matchingLeg && matchingLeg.cumulativeFuelBurnLiters ? matchingLeg.cumulativeFuelBurnLiters : (stop.cumulativeFuelBurnLiters || legFuel);
         const legEta = matchingLeg ? matchingLeg.etaMinutes : (stop.etaMinutes || '4.5');
         const cumulEta = matchingLeg && matchingLeg.cumulativeEtaMinutes ? matchingLeg.cumulativeEtaMinutes : (stop.cumulativeEtaMinutes || legEta);
+        const isCompleted = stop.status === 'COMPLETED' || (matchingLeg && matchingLeg.status === 'COMPLETED');
+        const cardClass = isCompleted ? 'leg-status-completed' : 'leg-status-active';
 
         return `
-            <div class="p-2 rounded-lg bg-[#161b22]/90 border border-[#30363d] hover:border-[#00f0ff]/50 transition text-[10px]">
+            <div class="p-2 rounded-lg bg-[#161b22]/90 border border-[#30363d] hover:border-[#00f0ff]/50 transition text-[10px] ${cardClass}">
                 <div class="flex items-center justify-between mb-1">
                     <span class="font-bold text-white flex items-center gap-1.5 truncate">
-                        <span class="w-4 h-4 rounded-full flex items-center justify-center font-bold text-[9px] text-black" style="background:${driverColor}">
-                            ${seqNum}
+                        <span class="w-4 h-4 rounded-full flex items-center justify-center font-bold text-[9px] text-black" style="background:${isCompleted ? '#10b981' : driverColor}">
+                            ${isCompleted ? '✓' : seqNum}
                         </span>
                         <span class="truncate">${stop.name}</span>
                     </span>
-                    <span class="text-[8px] font-mono px-1 py-0.5 rounded bg-slate-800 text-slate-300 whitespace-nowrap">
-                        ${legEta}m (Σ ${cumulEta}m)
+                    <span class="text-[8px] font-mono px-1 py-0.5 rounded ${isCompleted ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-300'} whitespace-nowrap">
+                        ${isCompleted ? 'CLEARED' : `${legEta}m (Σ ${cumulEta}m)`}
                     </span>
                 </div>
                 <div class="grid grid-cols-2 gap-1 text-[9px] font-mono text-slate-400 pt-1 border-t border-slate-800">
                     <div>Dist: <span class="text-white font-bold">${legDist}km</span> <span class="text-[#00f0ff] font-bold">(${cumulDist}km)</span></div>
                     <div>Fuel: <span class="text-white font-bold">${legFuel}L</span> <span class="text-amber-400 font-bold">(${cumulFuel}L)</span></div>
                 </div>
+                ${!isCompleted ? `
+                <button onclick="advanceDriverLeg(${driver.id})" class="route-advance-btn mt-1.5">
+                    <i class="fa-solid fa-check"></i> Mark Reached & Cleared
+                </button>
+                ` : ''}
             </div>
         `;
     }).join('');
@@ -1019,8 +1588,17 @@ function populateExpandedSidebar(driver) {
     document.getElementById('side-hours').innerText = `${driver.hours} Hours`;
     
     const initials = driver.name.substring(0, 2).toUpperCase();
-    document.getElementById('exp-profile-initials').innerText = initials;
-    document.getElementById('side-initials').innerText = initials;
+    const color = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const expInitialsEl = document.getElementById('exp-profile-initials');
+    const sideInitialsEl = document.getElementById('side-initials');
+    if (expInitialsEl) {
+        expInitialsEl.innerText = initials;
+        expInitialsEl.style.backgroundColor = color;
+    }
+    if (sideInitialsEl) {
+        sideInitialsEl.innerText = initials;
+        sideInitialsEl.style.backgroundColor = color;
+    }
 
     const carbonSaved = Number((driver.fuel * 0.28 * CONFIG.CARBON_COEFF_PER_LITER).toFixed(2));
     const carbonEl = document.getElementById('side-carbon-saved');
@@ -1110,7 +1688,12 @@ async function confirmRoleAssignment() {
     alert(`Mission role for Unit #${driver.id} (${driver.name}) dynamically updated to "${newRole}".`);
 }
 
+let _lastTacticalToggleTime = 0;
 function toggleOfficerTacticalMap() {
+    const now = Date.now();
+    if (now - _lastTacticalToggleTime < 300) return;
+    _lastTacticalToggleTime = now;
+
     audioEngine.playBeep(750, 0.08);
     const gridView = document.getElementById('officer-grid-view');
     const tacticalView = document.getElementById('officer-tactical-map-view');
@@ -1124,11 +1707,13 @@ function toggleOfficerTacticalMap() {
         if (gridView) gridView.classList.add('hidden');
         if (expandedView) expandedView.classList.add('hidden');
         tacticalView.classList.remove('hidden');
+        tacticalView.classList.add('flex', 'flex-col', 'h-full');
         if (modeBtnText) modeBtnText.innerText = "Fleet Grid View";
         initTacticalMasterMap();
     } else {
         // Switch back to Grid View
         tacticalView.classList.add('hidden');
+        tacticalView.classList.remove('flex', 'flex-col', 'h-full');
         if (gridView) gridView.classList.remove('hidden');
         if (modeBtnText) modeBtnText.innerText = "Tactical Map";
         setTimeout(() => {
@@ -1156,8 +1741,16 @@ function initTacticalMasterMap() {
         }
 
         renderTacticalMasterMapLayers();
-        state.tacticalMasterMap.invalidateSize();
-    }, 200);
+        if (state.tacticalMasterMap) {
+            state.tacticalMasterMap.invalidateSize();
+        }
+
+        // Update Turn-by-Turn Nav Banner on Tactical View
+        const activeDriver = state.fleet.find(d => d.id === state.selectedDriverId) || state.fleet[0];
+        if (activeDriver && typeof updateTurnByTurnNavBanner === 'function') {
+            updateTurnByTurnNavBanner(activeDriver);
+        }
+    }, 150);
 }
 
 function renderTacticalMasterMapLayers() {
@@ -1205,21 +1798,16 @@ function renderTacticalMasterMapLayers() {
         const [lat, lng] = driver.currentPos;
         const [targetLat, targetLng] = driver.targetPos;
 
+        const heading = calculateHeading(driver.currentPos, (driver.polyline && driver.polyline.length > 1) ? driver.polyline[1] : driver.targetPos);
+
         if (!state.tacticalMarkers[driverKey]) {
-            const truckBeacon = L.divIcon({
-                className: 'vehicle-beacon-wrapper',
-                html: `
-                    <div class="vehicle-beacon-container">
-                        <div class="vehicle-beacon-pulse" style="background: ${driverColor}40"></div>
-                        <div class="vehicle-beacon-dot" style="background: ${driverColor}; box-shadow: 0 0 10px ${driverColor}"></div>
-                        <div class="vehicle-beacon-truck">🚚</div>
-                    </div>
-                `,
-                iconSize: [36, 36],
-                iconAnchor: [18, 18]
-            });
+            const truckBeacon = createLiveProfileMarkerIcon(driver, heading);
 
             const truckMarker = L.marker([lat, lng], { icon: truckBeacon }).addTo(state.tacticalMasterMap);
+            truckMarker.on('click', () => {
+                state.selectedDriverId = driver.id;
+                updateTurnByTurnNavBanner(driver);
+            });
             truckMarker.bindPopup(`
                 <div class="tactical-popup p-1 text-xs">
                     <p class="font-bold text-white flex items-center gap-1.5">
@@ -1236,9 +1824,17 @@ function renderTacticalMasterMapLayers() {
             state.tacticalMarkers[driverKey] = truckMarker;
         } else {
             state.tacticalMarkers[driverKey].setLatLng([lat, lng]);
+            const truckBeacon = createLiveProfileMarkerIcon(driver, heading);
+            state.tacticalMarkers[driverKey].setIcon(truckBeacon);
+            const arrowEl = document.getElementById(`heading-arrow-${driver.id}`);
+            if (arrowEl && heading !== undefined) {
+                arrowEl.style.transform = `rotate(${heading}deg)`;
+            }
         }
 
         const polyColor = driver.isObstructed ? '#ef4444' : driverColor;
+        const pastelColor = getDriverPastelColor(driverColor, driver.id);
+        const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
 
         let routeDistKm = driver.totalDistanceKm;
         if (!routeDistKm && driver.polyline && driver.polyline.length > 1) {
@@ -1251,6 +1847,12 @@ function renderTacticalMasterMapLayers() {
         const fuelBurnL = driver.totalFuelBurnLiters || Number((routeDistKm * 0.138).toFixed(2));
         const co2SavedKg = Number((routeDistKm * (0.185 - 0.138) * CONFIG.CARBON_COEFF_PER_LITER).toFixed(2));
 
+        const obstructionActionBtn = driver.isObstructed ? `
+            <button onclick="clearDriverObstruction(${driver.id})" class="px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold mt-1.5 w-full flex items-center justify-center gap-1.5 shadow">
+                <i class="fa-solid fa-road"></i> Reopen Corridor / Clear Blockade
+            </button>
+        ` : '';
+
         const popupContent = `
             <div class="route-popup-card">
                 <p class="font-extrabold text-white text-xs mb-1 flex items-center gap-1.5">
@@ -1262,30 +1864,78 @@ function renderTacticalMasterMapLayers() {
                     <div class="flex justify-between"><span>Fuel Burn Req:</span><span class="text-amber-400 font-bold">${fuelBurnL} L</span></div>
                     <div class="flex justify-between"><span>Carbon Saved:</span><span class="text-emerald-400 font-bold">${co2SavedKg} kg CO₂</span></div>
                 </div>
+                ${obstructionActionBtn}
+                <button onclick="advanceDriverLeg(${driver.id})" class="route-advance-btn">
+                    <i class="fa-solid fa-forward-step"></i> Advance to Next Stop
+                </button>
                 <button onclick="clearDriverRoute(${driver.id})" class="route-clear-btn">
                     <i class="fa-solid fa-xmark"></i> Clear Route
                 </button>
             </div>
         `;
 
+        // 1. Completed segment in pastel tint
+        const compPolyKey = `poly-${driver.id}-completed`;
+        if (!state.tacticalPolylines[compPolyKey]) {
+            const compPoly = L.polyline(completedCoords, {
+                color: pastelColor,
+                weight: 3.5,
+                opacity: 0.60
+            }).addTo(state.tacticalMasterMap);
+            state.tacticalPolylines[compPolyKey] = compPoly;
+        } else {
+            state.tacticalPolylines[compPolyKey].setLatLngs(completedCoords);
+            state.tacticalPolylines[compPolyKey].setStyle({
+                color: pastelColor,
+                weight: 3.5,
+                opacity: 0.60
+            });
+        }
+
+        // 2. Active segment in vibrant dashed pulsing line
+        const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
         if (!state.tacticalPolylines[polyKey]) {
-            const poly = L.polyline(driver.polyline || [[lat, lng], [targetLat, targetLng]], {
+            const poly = L.polyline(activeLineCoords, {
                 color: polyColor,
-                weight: 4,
-                opacity: 0.85,
-                dashArray: driver.isObstructed ? '6, 6' : null
+                weight: 4.8,
+                opacity: 0.95,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
             }).addTo(state.tacticalMasterMap);
             poly.bindPopup(popupContent);
             poly.on('mouseover', () => poly.setStyle({ weight: 6, opacity: 1 }));
-            poly.on('mouseout', () => poly.setStyle({ weight: 4, opacity: 0.85 }));
+            poly.on('mouseout', () => poly.setStyle({ weight: 4.8, opacity: 0.95 }));
             state.tacticalPolylines[polyKey] = poly;
         } else {
-            state.tacticalPolylines[polyKey].setLatLngs(driver.polyline);
+            state.tacticalPolylines[polyKey].setLatLngs(activeLineCoords);
             state.tacticalPolylines[polyKey].setStyle({
                 color: polyColor,
-                dashArray: driver.isObstructed ? '6, 6' : null
+                weight: 4.8,
+                opacity: 0.95,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
             });
             state.tacticalPolylines[polyKey].setPopupContent(popupContent);
+        }
+
+        // 3. Upcoming segments in vibrant solid line
+        const upcomingPolyKey = `poly-${driver.id}-upcoming`;
+        if (!state.tacticalPolylines[upcomingPolyKey]) {
+            const upPoly = L.polyline(upcomingCoords, {
+                color: polyColor,
+                weight: 3.8,
+                opacity: 0.85
+            }).addTo(state.tacticalMasterMap);
+            upPoly.bindPopup(popupContent);
+            state.tacticalPolylines[upcomingPolyKey] = upPoly;
+        } else {
+            state.tacticalPolylines[upcomingPolyKey].setLatLngs(upcomingCoords);
+            state.tacticalPolylines[upcomingPolyKey].setStyle({
+                color: polyColor,
+                weight: 3.8,
+                opacity: 0.85
+            });
+            state.tacticalPolylines[upcomingPolyKey].setPopupContent(popupContent);
         }
 
         // 3. Render numbered sequence badges above assigned stops
@@ -1308,19 +1958,24 @@ function renderTacticalMasterMapLayers() {
             const legEta = matchingLeg ? matchingLeg.etaMinutes : (stop.etaMinutes || '4.5');
             const cumulEta = matchingLeg && matchingLeg.cumulativeEtaMinutes ? matchingLeg.cumulativeEtaMinutes : (stop.cumulativeEtaMinutes || legEta);
 
-            if (!state.tacticalSequenceMarkers[seqKey]) {
-                const seqIcon = L.divIcon({
-                    className: 'node-sequence-marker',
-                    html: `
-                        <div class="sequence-badge" style="border-color:${badgeColor}; background:${badgeColor}; box-shadow: 0 0 12px ${badgeColor}">
-                            ${seqNum}
-                        </div>
-                        <div class="sequence-label">${stop.name || ('Stop #' + seqNum)}</div>
-                    `,
-                    iconSize: [44, 44],
-                    iconAnchor: [22, 22]
-                });
+            const isCompleted = stop.status === 'COMPLETED';
+            const isCurrentTarget = !isCompleted && (seqList.find(s => s.status !== 'COMPLETED') === stop);
+            const badgeClasses = `sequence-badge ${isCompleted ? 'sequence-badge-completed' : ''} ${isCurrentTarget ? 'badge-current-target' : ''}`;
+            const badgeContent = isCompleted ? '✓' : seqNum;
 
+            const seqIcon = L.divIcon({
+                className: 'node-sequence-marker',
+                html: `
+                    <div class="${badgeClasses}" style="border-color:${isCompleted ? '#10b981' : badgeColor}; background:${isCompleted ? '#0d1117' : badgeColor}; box-shadow: 0 0 12px ${isCompleted ? '#10b981' : badgeColor}">
+                        ${badgeContent}
+                    </div>
+                    <div class="sequence-label">${stop.name || ('Stop #' + seqNum)}</div>
+                `,
+                iconSize: [44, 44],
+                iconAnchor: [22, 22]
+            });
+
+            if (!state.tacticalSequenceMarkers[seqKey]) {
                 const seqMarker = L.marker([stopLat, stopLng], { icon: seqIcon, zIndexOffset: 1000 }).addTo(state.tacticalMasterMap);
                 seqMarker.bindPopup(`
                     <div class="tactical-popup p-1.5 text-xs font-sans min-w-[210px]">
@@ -1343,6 +1998,7 @@ function renderTacticalMasterMapLayers() {
                 state.tacticalSequenceMarkers[seqKey] = seqMarker;
             } else {
                 state.tacticalSequenceMarkers[seqKey].setLatLng([stopLat, stopLng]);
+                state.tacticalSequenceMarkers[seqKey].setIcon(seqIcon);
             }
         });
     });
@@ -1391,9 +2047,14 @@ async function clearDriverRoute(driverId) {
 
     // Update map elements
     updateMiniMapPolyline(driver.id);
-    if (state.tacticalPolylines && state.tacticalPolylines[`poly-${driver.id}`]) {
-        state.tacticalPolylines[`poly-${driver.id}`].setLatLngs([driver.currentPos]);
-        state.tacticalPolylines[`poly-${driver.id}`].closePopup();
+    if (state.tacticalPolylines) {
+        if (state.tacticalPolylines[`poly-${driver.id}`]) {
+            state.tacticalPolylines[`poly-${driver.id}`].setLatLngs([driver.currentPos]);
+            state.tacticalPolylines[`poly-${driver.id}`].closePopup();
+        }
+        if (state.tacticalPolylines[`poly-${driver.id}-completed`]) {
+            state.tacticalPolylines[`poly-${driver.id}-completed`].setLatLngs([]);
+        }
     }
 
     // Remove sequence markers for this driver
@@ -1410,15 +2071,114 @@ async function clearDriverRoute(driverId) {
         if (state.driverPolyline) {
             state.driverPolyline.setLatLngs([driver.currentPos]);
         }
+        if (state.driverCompletedPolyline) {
+            state.driverCompletedPolyline.setLatLngs([]);
+        }
         if (state.fullMapPoly) {
             state.fullMapPoly.setLatLngs([driver.currentPos]);
         }
+        if (state.fullMapCompletedPoly) {
+            state.fullMapCompletedPoly.setLatLngs([]);
+        }
         renderDriverSequenceMarkers(driver);
         updateDriverNavigationHUD(driver);
+        renderDriverLegsList(driver);
     }
 
     audioEngine.triggerCommandAudioBroadcast(`Route vector cleared for Unit #${driver.id} ${driver.name}. Standing by for next dispatch directive.`);
     alert(`❌ Route line for Unit #${driver.id} (${driver.name}) has been cleared.`);
+}
+
+/**
+ * Dynamic Leg Progression (Spec 2)
+ * Advances operative to next stop, toggling completed leg into pastel and active into dashed flow
+ */
+async function advanceDriverLeg(driverId) {
+    audioEngine.playBeep(880, 0.12);
+    const driver = state.fleet.find(d => d.id === driverId);
+    if (!driver) return;
+
+    if (!driver.routeSequence || driver.routeSequence.length === 0) {
+        alert("No active route sequence found for this operative.");
+        return;
+    }
+
+    let responseData = null;
+    if (state.wsConnected && !state.simulatedOffline) {
+        try {
+            const res = await fetch(`${CONFIG.API_URL}/fleet/${driverId}/advance`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            if (res.ok) {
+                responseData = await res.json();
+            }
+        } catch (e) {
+            console.warn('API advance failed, falling back to offline progression:', e);
+        }
+    }
+
+    if (responseData && responseData.driver) {
+        const assigned = responseData.driver;
+        const idx = state.fleet.findIndex(d => d.id === assigned.id);
+        if (idx !== -1) {
+            state.fleet[idx] = assigned;
+        }
+    } else {
+        // Offline progression simulation
+        const stopIdx = driver.routeSequence.findIndex(s => s.status !== 'COMPLETED');
+        if (stopIdx === -1) {
+            alert(`All stops for Unit #${driver.id} are already completed!`);
+            return;
+        }
+        const clearedStop = driver.routeSequence[stopIdx];
+        clearedStop.status = 'COMPLETED';
+        driver.currentPos = [clearedStop.lat, clearedStop.lng];
+        if (driver.legs && driver.legs[stopIdx]) {
+            driver.legs[stopIdx].status = 'COMPLETED';
+        }
+        if (!driver.isRescue && driver.stock > 0) {
+            const deliverCount = Math.min(driver.stock, clearedStop.demand || 25);
+            driver.stock = Math.max(0, driver.stock - deliverCount);
+            driver.deliveredTotal = (driver.deliveredTotal || 0) + deliverCount;
+        }
+        const nextStop = driver.routeSequence.find(s => s.status !== 'COMPLETED');
+        if (nextStop) {
+            nextStop.status = 'IN_PROGRESS';
+            driver.node = nextStop.name;
+            driver.targetPos = [nextStop.lat, nextStop.lng];
+            if (driver.legs) {
+                const nextLeg = driver.legs.find(l => l.status !== 'COMPLETED');
+                if (nextLeg) nextLeg.status = 'IN_PROGRESS';
+            }
+        } else {
+            driver.missionStatus = 'DELIVERED';
+            driver.node = `Delivered: ${clearedStop.name}`;
+        }
+        driver.lastUpdated = new Date().toISOString();
+        await offlineStore.updateDriver(driver);
+    }
+
+    await offlineStore.saveFleet(state.fleet);
+    const updated = state.fleet.find(d => d.id === driverId);
+
+    // Update all UI components
+    updateDriverCardUI(updated);
+    updateMiniMapPolyline(updated.id);
+    renderTacticalMasterMapLayers();
+    if (state.selectedDriverId === updated.id) {
+        populateExpandedSidebar(updated);
+        renderDriverSequenceMarkers(updated);
+        updateDriverNavigationHUD(updated);
+        renderDriverLegsList(updated);
+    }
+    if (state.user && state.user.role === 'DRIVER' && state.user.id === updated.id) {
+        initDriverInterface(updated);
+    }
+    updateTurnByTurnNavBanner(updated);
+
+    audioEngine.triggerCommandAudioBroadcast(`Operative ${updated.name} cleared stop and advanced to next sector.`);
+    showBroadcastToast(`Operative ${updated.name} reached and cleared stop! Next vector engaged.`);
 }
 
 function handleOfficerMapClick(lat, lng, optionalName = null) {
@@ -1598,7 +2358,9 @@ async function deployNewFieldUnit() {
             deliveredTotal: 0,
             currentPos: [baseLoc.lat, baseLoc.lng],
             targetPos: [baseLoc.lat + 0.005, baseLoc.lng + 0.005],
-            polyline: [[baseLoc.lat, baseLoc.lng], [baseLoc.lat + 0.005, baseLoc.lng + 0.005]],
+            polyline: (typeof getRoadSnappedPath === 'function')
+                ? getRoadSnappedPath([baseLoc.lat, baseLoc.lng], [baseLoc.lat + 0.005, baseLoc.lng + 0.005], false)
+                : [[baseLoc.lat, baseLoc.lng], [baseLoc.lat + 0.005, baseLoc.lng + 0.005]],
             isObstructed: false,
             crashSensor: { isCrashed: false, gForce: 1.0, tiltAngle: 0, lastTriggered: null },
             quantumMetrics: { hamiltonianEnergy: CONFIG.GROUND_STATE_ENERGY_EV, carbonSavedKg: 15.0, distanceSavedKm: 5.2, qaoaLayers: 4, optimalRouteFound: true },
@@ -1816,19 +2578,25 @@ async function submitTextLocationDispatch() {
             targetDriver = state.fleet[0];
         }
 
+        const cleanName = locationName.trim();
+        const resolvedCoord = (typeof resolveStreetLocation === 'function') 
+            ? resolveStreetLocation(cleanName) 
+            : (typeof findNearestRoadNode === 'function' ? findNearestRoadNode([16.5062, 80.6120]) : [16.5062, 80.6120]);
+
         const newStop = {
             id: 100 + (targetDriver.routeSequence ? targetDriver.routeSequence.length : 1),
             seq: (targetDriver.routeSequence ? targetDriver.routeSequence.length : 0) + 1,
-            name: locationName,
-            lat: targetDriver.targetPos[0] + 0.008,
-            lng: targetDriver.targetPos[1] + 0.008,
+            name: cleanName,
+            lat: resolvedCoord[0],
+            lng: resolvedCoord[1],
             demand: 120,
             supplyType: targetDriver.job || 'Food Supply',
             urgency: 'HIGH',
             hazard: 'Moderate Rain Hazard',
             color: '#f59e0b',
             rain: '22mm/h',
-            wind: '32 km/h'
+            wind: '32 km/h',
+            status: "PENDING"
         };
 
         if (!targetDriver.routeSequence) targetDriver.routeSequence = [];
@@ -1872,6 +2640,23 @@ async function submitTextLocationDispatch() {
     await offlineStore.saveFleet(state.fleet);
 
     const driver = responseData.driver;
+    const addedStop = responseData.newStop || (driver && driver.routeSequence && driver.routeSequence[driver.routeSequence.length - 1]);
+    if (addedStop && typeof RESCUE_LOCATIONS !== 'undefined') {
+        const existingNode = RESCUE_LOCATIONS.find(l => l.name.toLowerCase() === addedStop.name.toLowerCase() || (Math.hypot(l.lat - addedStop.lat, l.lng - addedStop.lng) < 0.002));
+        if (!existingNode) {
+            RESCUE_LOCATIONS.push({
+                id: addedStop.id || (RESCUE_LOCATIONS.length + 1),
+                name: addedStop.name,
+                lat: addedStop.lat,
+                lng: addedStop.lng,
+                demand: addedStop.demand || 100,
+                hazard: addedStop.hazard || 'Moderate Rain Hazard',
+                rain: addedStop.rain || '20mm/h',
+                wind: addedStop.wind || '25 km/h'
+            });
+        }
+    }
+
     if (locInput) locInput.value = '';
     updateDriverCardUI(driver);
     updateMiniMapPolyline(driver.id);
@@ -1970,15 +2755,24 @@ async function resolveCrashSOS() {
 }
 
 // ==========================================
-// 9. ROUTE OBSTRUCTION & QUANTUM DETOUR
+// 9. ROUTE OBSTRUCTION & QUANTUM DETOUR (SPEC 4)
 // ==========================================
-async function triggerRouteBlock() {
-    audioEngine.playBeep(440, 0.2);
-    alert("⚠️ ROUTE OBSTRUCTION CONFIRMED! Road vector blocked by flood surge. Calculating quantum detour...");
-    
-    const driver = state.fleet.find(d => d.id === state.selectedDriverId) || state.fleet[0];
+async function triggerRouteClosedFromDriver(driverId) {
+    if (state.user && state.user.role === 'OFFICER') {
+        showBroadcastToast('⚠️ Driver Control Restricted: Road closures can only be submitted by deployed vehicle drivers.');
+        return;
+    }
+    const id = driverId || state.selectedDriverId || (state.fleet[0] ? state.fleet[0].id : 1);
+    const driver = state.fleet.find(d => d.id === id) || state.fleet[0];
+    if (!driver) return;
+
+    const requestVersion = Date.now();
+    driver.routeVersion = requestVersion;
+
+    audioEngine.playBeep(440, 0.25);
     driver.isObstructed = true;
 
+    // Quantum detour recalculation
     if (driver.routeSequence && driver.routeSequence.length > 1) {
         const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true);
         driver.polyline = multiResult.fullPolyline;
@@ -1992,24 +2786,95 @@ async function triggerRouteBlock() {
         driver.polyline = reroute.path;
     }
     driver.fuel += 2.0;
+    driver.lastUpdated = new Date().toISOString();
+
     await offlineStore.updateDriver(driver);
+    await offlineStore.saveFleet(state.fleet);
 
     if (state.wsConnected && !state.simulatedOffline) {
         try {
             await fetch(`${CONFIG.API_URL}/fleet/${driver.id}/obstruction`, { method: 'POST' });
-        } catch (e) {}
+        } catch (e) {
+            console.warn('Backend obstruction notification fallback:', e);
+            await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id });
+        }
+    } else {
+        await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id });
     }
 
-    if (state.driverPolyline) {
-        state.driverPolyline.setLatLngs(driver.polyline);
-        state.driverPolyline.setStyle({ color: '#ef4444', dashArray: '6, 6' });
-    }
-    updateMiniMapPolyline(driver.id);
+    // Update UI components
     updateDriverCardUI(driver);
+    updateMiniMapPolyline(driver.id);
+    renderTacticalMasterMapLayers();
+    if (state.fullMap && state.selectedDriverId === driver.id) {
+        expandDriverMap(driver.id);
+    }
+    if (state.user && state.user.role === 'DRIVER') {
+        initDriverInterface(driver);
+    }
 
-    // Update navigation cue
+    // Audio & Toast Alert
+    audioEngine.triggerCommandAudioBroadcast(`Tactical corridor blocked for Operative ${driver.name}! Quantum detour tunneling initiated.`);
+    showBroadcastToast(`⚠️ Route Closed: Operative ${driver.name} reported blockade. Red detour engaged.`);
+
     const cueEl = document.getElementById('drv-nav-cue');
-    if (cueEl) cueEl.innerText = "DETOUR ENGAGED: Bypassing High Water Inundation via Vector B";
+    if (cueEl) cueEl.innerText = "DETOUR ENGAGED: Corridor Obstructed - Quantum Bypassing Active";
+}
+
+async function triggerRouteBlock() {
+    await triggerRouteClosedFromDriver(state.selectedDriverId);
+}
+
+async function clearDriverObstruction(driverId) {
+    const id = driverId || state.selectedDriverId || (state.fleet[0] ? state.fleet[0].id : 1);
+    const driver = state.fleet.find(d => d.id === id) || state.fleet[0];
+    if (!driver) return;
+
+    audioEngine.playBeep(780, 0.15);
+    driver.isObstructed = false;
+
+    // Normal quantum road route restoration
+    if (driver.routeSequence && driver.routeSequence.length > 1) {
+        const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false);
+        driver.polyline = multiResult.fullPolyline;
+        driver.legs = multiResult.legs;
+        driver.totalDistanceKm = multiResult.totalDistanceKm;
+        driver.totalFuelBurnLiters = multiResult.totalFuelBurnLiters;
+        driver.totalEtaMinutes = multiResult.totalEtaMinutes;
+        driver.roadColor = multiResult.roadColor;
+    } else {
+        const reroute = quantumEngine.solveOptimalRoute(driver.currentPos, driver.targetPos, false);
+        driver.polyline = reroute.path;
+    }
+    driver.lastUpdated = new Date().toISOString();
+
+    await offlineStore.updateDriver(driver);
+    await offlineStore.saveFleet(state.fleet);
+
+    if (state.wsConnected && !state.simulatedOffline) {
+        try {
+            await fetch(`${CONFIG.API_URL}/fleet/${driver.id}/clear-obstruction`, { method: 'POST' });
+        } catch (e) {
+            console.warn('Backend clear-obstruction notification fallback:', e);
+        }
+    }
+
+    // Update UI components
+    updateDriverCardUI(driver);
+    updateMiniMapPolyline(driver.id);
+    renderTacticalMasterMapLayers();
+    if (state.fullMap && state.selectedDriverId === driver.id) {
+        expandDriverMap(driver.id);
+    }
+    if (state.user && state.user.role === 'DRIVER') {
+        initDriverInterface(driver);
+    }
+
+    audioEngine.triggerCommandAudioBroadcast(`Corridor reopened for Operative ${driver.name}. Normal quantum vector restored.`);
+    showBroadcastToast(`✅ Corridor Reopened: Blockade cleared by Command Officer.`);
+
+    const cueEl = document.getElementById('drv-nav-cue');
+    if (cueEl) cueEl.innerText = "NAVIGATION ACTIVE: Proceed along optimal road corridor";
 }
 
 /// ==========================================
@@ -2071,11 +2936,16 @@ function renderDriverSequenceMarkers(driver) {
         const legEta = matchingLeg ? matchingLeg.etaMinutes : (stop.etaMinutes || '4.5');
         const cumulEta = matchingLeg && matchingLeg.cumulativeEtaMinutes ? matchingLeg.cumulativeEtaMinutes : (stop.cumulativeEtaMinutes || legEta);
 
+        const isCompleted = stop.status === 'COMPLETED';
+        const isCurrentTarget = !isCompleted && (seqList.find(s => s.status !== 'COMPLETED') === stop);
+        const badgeClasses = `sequence-badge ${isCompleted ? 'sequence-badge-completed' : ''} ${isCurrentTarget ? 'badge-current-target' : ''}`;
+        const badgeContent = isCompleted ? '✓' : seqNum;
+
         const seqIcon = L.divIcon({
             className: 'node-sequence-marker',
             html: `
-                <div class="sequence-badge" style="border-color:${badgeColor}; background:${badgeColor}; box-shadow: 0 0 12px ${badgeColor}">
-                    ${seqNum}
+                <div class="${badgeClasses}" style="border-color:${isCompleted ? '#10b981' : badgeColor}; background:${isCompleted ? '#0d1117' : badgeColor}; box-shadow: 0 0 12px ${isCompleted ? '#10b981' : badgeColor}">
+                    ${badgeContent}
                 </div>
                 <div class="sequence-label">${stop.name || ('Stop #' + seqNum)}</div>
             `,
@@ -2114,8 +2984,17 @@ function initDriverInterface(driver) {
     document.getElementById('drv-sidebar-salary').innerText = `₹${driver.salary.toLocaleString()} / mo`;
     
     const initials = driver.name.substring(0, 2).toUpperCase();
-    document.getElementById('drv-initials-badge').innerText = initials;
-    document.getElementById('drv-side-initials').innerText = initials;
+    const color = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const drvInitBadge = document.getElementById('drv-initials-badge');
+    const drvSideInit = document.getElementById('drv-side-initials');
+    if (drvInitBadge) {
+        drvInitBadge.innerText = initials;
+        drvInitBadge.style.backgroundColor = color;
+    }
+    if (drvSideInit) {
+        drvSideInit.innerText = initials;
+        drvSideInit.style.backgroundColor = color;
+    }
 
     setTimeout(() => {
         const [lat, lng] = driver.currentPos;
@@ -2145,24 +3024,23 @@ function initDriverInterface(driver) {
                     <div class="flex justify-between"><span>Fuel Burn Req:</span><span class="text-amber-400 font-bold">${fuelBurnL} L</span></div>
                     <div class="flex justify-between"><span>Carbon Saved:</span><span class="text-emerald-400 font-bold">${co2SavedKg} kg CO₂</span></div>
                 </div>
+                <button onclick="triggerRouteClosedFromDriver(${driver.id})" class="route-closed-btn">
+                    <i class="fa-solid fa-ban"></i> ❌ Route Closed
+                </button>
+                <button onclick="advanceDriverLeg(${driver.id})" class="route-advance-btn">
+                    <i class="fa-solid fa-forward-step"></i> Advance to Next Stop
+                </button>
                 <button onclick="clearDriverRoute(${driver.id})" class="route-clear-btn">
                     <i class="fa-solid fa-xmark"></i> Clear Route
                 </button>
             </div>
         `;
 
-        const beaconIcon = L.divIcon({
-            className: 'vehicle-beacon-wrapper',
-            html: `
-                <div class="vehicle-beacon-container">
-                    <div class="vehicle-beacon-pulse" style="background: ${driverColor}40"></div>
-                    <div class="vehicle-beacon-dot" style="background: ${driverColor}; box-shadow: 0 0 10px ${driverColor}"></div>
-                    <div class="vehicle-beacon-truck">🚚</div>
-                </div>
-            `,
-            iconSize: [36, 36],
-            iconAnchor: [18, 18]
-        });
+        const { completedCoords, activeCoords, upcomingCoords } = splitRouteSegments(driver);
+        const pastel = getDriverPastelColor(driverColor, driver.id);
+
+        const heading = calculateHeading(driver.currentPos, (driver.polyline && driver.polyline.length > 1) ? driver.polyline[1] : driver.targetPos);
+        const beaconIcon = createLiveProfileMarkerIcon(driver, heading);
 
         if (!state.driverMap) {
             state.driverMap = L.map('driver-map', { zoomControl: false }).setView([lat, lng], 14);
@@ -2173,24 +3051,70 @@ function initDriverInterface(driver) {
                 .addTo(state.driverMap)
                 .bindPopup(`<b>${driver.name}</b><br>${driver.node}`);
 
-            // Dynamic color polyline
-            state.driverPolyline = L.polyline(driver.polyline || [[lat, lng], [targetLat, targetLng]], {
+            // Completed segment in pastel
+            state.driverCompletedPolyline = L.polyline(completedCoords, {
+                color: pastel,
+                weight: 3.5,
+                opacity: 0.60
+            }).addTo(state.driverMap);
+
+            // Active segment in dashed pulsing vibrant line
+            const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
+            state.driverPolyline = L.polyline(activeLineCoords, {
                 color: polyColor,
-                weight: 5,
+                weight: 4.8,
                 opacity: 0.95,
-                dashArray: driver.isObstructed ? '6, 6' : null
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
             }).addTo(state.driverMap);
             state.driverPolyline.bindPopup(popupContent);
+
+            // Upcoming segments in solid line
+            state.driverUpcomingPolyline = L.polyline(upcomingCoords, {
+                color: polyColor,
+                weight: 3.8,
+                opacity: 0.85
+            }).addTo(state.driverMap);
         } else {
             state.driverMap.setView([lat, lng], 14);
             state.driverMarker.setLatLng([lat, lng]);
             state.driverMarker.setIcon(beaconIcon);
-            state.driverPolyline.setLatLngs(driver.polyline);
+            state.driverMarker.setPopupContent(`<b>${driver.name}</b><br>${driver.node}`);
+            const arrowEl = document.getElementById(`heading-arrow-${driver.id}`);
+            if (arrowEl && heading !== undefined) {
+                arrowEl.style.transform = `rotate(${heading}deg)`;
+            }
+            if (!state.driverCompletedPolyline) {
+                state.driverCompletedPolyline = L.polyline(completedCoords, {
+                    color: pastel,
+                    weight: 3.5,
+                    opacity: 0.60
+                }).addTo(state.driverMap);
+            } else {
+                state.driverCompletedPolyline.setLatLngs(completedCoords);
+                state.driverCompletedPolyline.setStyle({ color: pastel, weight: 3.5, opacity: 0.60 });
+            }
+            const activeLineCoords = activeCoords.length > 0 ? activeCoords : (completedCoords.length > 0 ? [] : ((driver.polyline && driver.polyline.length > 1) ? driver.polyline : (typeof getRoadSnappedPath === 'function' ? getRoadSnappedPath([lat, lng], [targetLat, targetLng]) : [])));
+            state.driverPolyline.setLatLngs(activeLineCoords);
             state.driverPolyline.setStyle({
                 color: polyColor,
-                dashArray: driver.isObstructed ? '6, 6' : null
+                weight: 4.8,
+                opacity: 0.95,
+                dashArray: '8, 12',
+                className: 'pulsing-route-vector'
             });
             state.driverPolyline.setPopupContent(popupContent);
+
+            if (!state.driverUpcomingPolyline) {
+                state.driverUpcomingPolyline = L.polyline(upcomingCoords, {
+                    color: polyColor,
+                    weight: 3.8,
+                    opacity: 0.85
+                }).addTo(state.driverMap);
+            } else {
+                state.driverUpcomingPolyline.setLatLngs(upcomingCoords);
+                state.driverUpcomingPolyline.setStyle({ color: polyColor, weight: 3.8, opacity: 0.85 });
+            }
             state.driverMap.invalidateSize();
         }
 
@@ -2202,6 +3126,12 @@ function initDriverInterface(driver) {
 
         // Update clean navigation HUD telemetry
         updateDriverNavigationHUD(driver);
+
+        // Update Turn-by-Turn Navigation Banner
+        updateTurnByTurnNavBanner(driver);
+
+        // Start continuous live telemetry stream
+        startDriverTelemetryStream(driver);
     }, 250);
 }
 
@@ -2537,6 +3467,8 @@ window.confirmRoleAssignment = confirmRoleAssignment;
 window.executeRestockVerification = executeRestockVerification;
 window.resolveCrashSOS = resolveCrashSOS;
 window.triggerRouteBlock = triggerRouteBlock;
+window.triggerRouteClosedFromDriver = triggerRouteClosedFromDriver;
+window.clearDriverObstruction = clearDriverObstruction;
 window.triggerDriverSOS = triggerDriverSOS;
 window.pressNum = pressNum;
 window.clearInput = clearInput;
@@ -2544,9 +3476,17 @@ window.confirmStock = confirmStock;
 window.exportReportCSV = exportReportCSV;
 window.executeNodeDispatchAndReroute = executeNodeDispatchAndReroute;
 window.clearDriverRoute = clearDriverRoute;
+window.advanceDriverLeg = advanceDriverLeg;
 window.toggleDriverLegsDrawer = toggleDriverLegsDrawer;
 window.renderDriverLegsList = renderDriverLegsList;
 window.bindAllEventHandlers = bindAllEventHandlers;
+window.calculateHeading = calculateHeading;
+window.calculateRoadHeading = calculateRoadHeading;
+window.createLiveProfileMarkerIcon = createLiveProfileMarkerIcon;
+window.updateTacticalDriverMarker = updateTacticalDriverMarker;
+window.computeTurnByTurnInstructions = computeTurnByTurnInstructions;
+window.updateTurnByTurnNavBanner = updateTurnByTurnNavBanner;
+window.startDriverTelemetryStream = startDriverTelemetryStream;
 
 // Immediate bind check if DOM is already ready
 if (document.readyState === 'complete' || document.readyState === 'interactive') {

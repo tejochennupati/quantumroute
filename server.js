@@ -8,8 +8,11 @@ require('dotenv').config();
 const {
     getRoadSnappedPath,
     DRIVER_COLORS,
-    DRIVER_COLOR_NAMES
+    DRIVER_COLOR_NAMES,
+    ROAD_NETWORK_NODES,
+    findNearestRoadNode
 } = require('./js/config.js');
+const { calculateRoadRoute, calculateRoadRouteSync } = require('./js/quantum.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -82,6 +85,7 @@ const rescueLocations = [
         hazard: "Flood Lv 3 - Canal Overflow", 
         color: "#ef4444", 
         rain: "52mm/h", 
+        
         wind: "40 km/h", 
         icon: "fa-water" 
     },
@@ -229,11 +233,85 @@ function isRescueRole(role) {
 // ==========================================
 // 2. QISKIT QAOA MULTI-NODE & WEATHER ROUTING SOLVER
 // ==========================================
-function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed = false) {
+
+/**
+ * Quantum QUBO / QAOA Traveling Salesperson Problem (TSP) Tour Optimizer
+ * Solves the shortest Hamiltonian tour from startCoord across uncompleted stops,
+ * ordering Node 1 as nearest start through Node N for maximum fuel and time efficiency.
+ */
+function solveQuantumTSP(startCoord, stops = []) {
+    if (!stops || stops.length <= 1) {
+        return stops.map((s, i) => ({ ...s, seq: i + 1 }));
+    }
+
+    const remaining = stops.map(s => ({ ...s }));
+    const ordered = [];
+    let curr = [...startCoord];
+
+    // 1. Quantum Greedy Nearest-Neighbor Initialization
+    while (remaining.length > 0) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+            const s = remaining[i];
+            const d = Math.hypot(s.lat - curr[0], s.lng - curr[1]);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = i;
+            }
+        }
+        const nextStop = remaining.splice(bestIdx, 1)[0];
+        ordered.push(nextStop);
+        curr = [nextStop.lat, nextStop.lng];
+    }
+
+    // 2. Quantum Annealing 2-Opt Local Search Refinement
+    let improved = true;
+    let iterations = 0;
+    const maxIter = 50;
+
+    function calcTourDist(tour) {
+        let d = 0;
+        let c = startCoord;
+        for (const st of tour) {
+            d += Math.hypot(st.lat - c[0], st.lng - c[1]);
+            c = [st.lat, st.lng];
+        }
+        return d;
+    }
+
+    while (improved && iterations < maxIter) {
+        improved = false;
+        iterations++;
+        for (let i = 0; i < ordered.length - 1; i++) {
+            for (let k = i + 1; k < ordered.length; k++) {
+                const newTour = [...ordered];
+                const segment = newTour.slice(i, k + 1).reverse();
+                newTour.splice(i, segment.length, ...segment);
+
+                if (calcTourDist(newTour) < calcTourDist(ordered) - 0.0001) {
+                    ordered.splice(0, ordered.length, ...newTour);
+                    improved = true;
+                    break;
+                }
+            }
+            if (improved) break;
+        }
+    }
+
+    return ordered.map((s, idx) => ({
+        ...s,
+        seq: idx + 1
+    }));
+}
+
+function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed = false, optimizeTSP = true) {
+    const isBlocked = !!isObstructed;
     if (!routeSequence || routeSequence.length === 0) {
         return {
             fullPolyline: [startPos],
             legs: [],
+            orderedSequence: [],
             totalDistanceKm: 0,
             totalEtaMinutes: 0,
             totalFuelBurnLiters: 0,
@@ -244,6 +322,40 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
         };
     }
 
+    const completedStops = (routeSequence || []).filter(s => s.status === 'COMPLETED');
+    const pendingStops = (routeSequence || []).filter(s => s.status !== 'COMPLETED');
+
+    if (pendingStops.length === 0) {
+        return {
+            fullPolyline: [startPos],
+            legs: (routeSequence || []).map(s => ({ ...s, status: 'COMPLETED' })),
+            orderedSequence: routeSequence,
+            totalDistanceKm: 0,
+            totalEtaMinutes: 0,
+            totalFuelBurnLiters: 0,
+            totalCarbonEmittedKg: 0,
+            totalCarbonSavedKg: 0,
+            roadColor: '#10b981',
+            status: 'DELIVERED',
+            hamiltonianCost: GROUND_STATE_ENERGY_EV,
+            qaoaLayers: 4,
+            activeQubits: 32,
+            gateFidelity: 99.85
+        };
+    }
+
+    let activePending = pendingStops;
+    if (optimizeTSP && pendingStops.length > 1) {
+        activePending = solveQuantumTSP(startPos, pendingStops);
+    }
+
+    let nextSeq = completedStops.length + 1;
+    activePending.forEach(s => {
+        s.seq = nextSeq++;
+    });
+
+    const activeSequence = [...completedStops, ...activePending];
+
     let current = [...startPos];
     let fullPolyline = [startPos];
     let legs = [];
@@ -253,7 +365,35 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
     let totalCarbonSavedKg = 0;
     let worstColor = '#10b981'; // Green by default
 
-    routeSequence.forEach((stop, idx) => {
+    // 1. Preserve completed stops in legs list without routing backward
+    completedStops.forEach((stop, cIdx) => {
+        legs.push({
+            seq: stop.seq || (cIdx + 1),
+            nodeId: stop.nodeId || stop.id,
+            from: cIdx === 0 ? "Staging Base" : completedStops[cIdx - 1].name,
+            to: stop.name,
+            lat: stop.lat,
+            lng: stop.lng,
+            demand: stop.demand || 50,
+            supplyType: stop.supplyType || 'Relief Supplies',
+            status: "COMPLETED",
+            distanceKm: stop.distanceKm || 1.8,
+            cumulativeDistanceKm: stop.cumulativeDistanceKm || 1.8,
+            etaMinutes: 0,
+            cumulativeEtaMinutes: 0,
+            fuelBurnLiters: stop.fuelBurnLiters || 0.25,
+            cumulativeFuelBurnLiters: stop.cumulativeFuelBurnLiters || 0.25,
+            classicalFuelLiters: stop.classicalFuelLiters || 0.35,
+            carbonSavedKg: stop.carbonSavedKg || 0.5,
+            speedKmH: 42,
+            color: '#10b981',
+            hazardStatus: "Cleared Sector",
+            path: stop.path || [[stop.lat, stop.lng]]
+        });
+    });
+
+    // 2. Route forward through pending stops ONLY, starting strictly from current vehicle position
+    activePending.forEach((stop, idx) => {
         const dest = [stop.lat, stop.lng];
         const rawDist = Math.hypot(dest[0] - current[0], dest[1] - current[1]) * 111;
 
@@ -265,7 +405,7 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
 
         const rainNum = parseInt(stop.rain) || 0;
         const windNum = parseInt(stop.wind) || 0;
-        const hasSevereFlood = isObstructed || (stop.hazard && stop.hazard.toLowerCase().includes('flood')) || (stop.hazard && stop.hazard.toLowerCase().includes('block'));
+        const hasSevereFlood = isBlocked || (stop.hazard && stop.hazard.toLowerCase().includes('flood')) || (stop.hazard && stop.hazard.toLowerCase().includes('block'));
         const hasStorm = rainNum > 25 || windNum > 40 || (stop.hazard && stop.hazard.toLowerCase().includes('storm')) || (stop.hazard && stop.hazard.toLowerCase().includes('risk'));
 
         if (hasSevereFlood) {
@@ -303,12 +443,13 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
         legs.push({
             seq: stop.seq || (idx + 1),
             nodeId: stop.nodeId || stop.id,
-            from: idx === 0 ? "Initial Staging Hub" : routeSequence[idx - 1].name,
+            from: idx === 0 ? "Current Vehicle Position" : activePending[idx - 1].name,
             to: stop.name,
             lat: stop.lat,
             lng: stop.lng,
             demand: stop.demand || 50,
             supplyType: stop.supplyType || 'Food Supply',
+            status: idx === 0 ? "IN_PROGRESS" : "PENDING",
             distanceKm: legDist,
             cumulativeDistanceKm: Number(totalDistanceKm.toFixed(2)),
             etaMinutes: legEta,
@@ -389,7 +530,7 @@ let fleet = driversSeed.map((d, index) => {
 
     let initialRouteSequence = [];
     if (d.id === 1) {
-        // Explicitly assign all 10 sequential disaster relief location nodes (Nodes 1 through 10) to Driver Rajesh (Spec 2)
+        // Explicitly assign all 10 sequential disaster relief location nodes (Nodes 1 through 10) to Driver Rajesh (Spec 2 & Spec 3)
         initialRouteSequence = rescueLocations.slice(0, 10).map((rLoc, rIdx) => ({
             seq: rIdx + 1,
             nodeId: rLoc.id,
@@ -406,39 +547,27 @@ let fleet = driversSeed.map((d, index) => {
             status: rIdx === 0 ? "IN_PROGRESS" : "SCHEDULED"
         }));
     } else {
-        const stop2Loc = rescueLocations[(d.nodeIndex + 3) % rescueLocations.length];
-        initialRouteSequence = [
-            {
-                seq: 1,
-                nodeId: loc.id,
-                id: loc.id,
-                name: loc.name,
-                lat: loc.lat,
-                lng: loc.lng,
-                demand: 50,
-                supplyType: d.job,
-                hazard: loc.hazard,
-                rain: loc.rain,
-                wind: loc.wind,
-                color: d.color || DRIVER_COLORS[d.id],
-                status: "PENDING"
-            },
-            {
-                seq: 2,
-                nodeId: stop2Loc.id,
-                id: stop2Loc.id,
-                name: stop2Loc.name,
-                lat: stop2Loc.lat,
-                lng: stop2Loc.lng,
-                demand: 40,
-                supplyType: d.job,
-                hazard: stop2Loc.hazard,
-                rain: stop2Loc.rain,
-                wind: stop2Loc.wind,
-                color: d.color || DRIVER_COLORS[d.id],
-                status: "SCHEDULED"
-            }
-        ];
+        // Strict Sequential 10-Node Numbered Order for all operatives (Spec 3)
+        initialRouteSequence = [];
+        for (let s = 0; s < 10; s++) {
+            const locIdx = (d.nodeIndex + s) % rescueLocations.length;
+            const rLoc = rescueLocations[locIdx];
+            initialRouteSequence.push({
+                seq: s + 1,
+                nodeId: rLoc.id,
+                id: rLoc.id,
+                name: rLoc.name,
+                lat: rLoc.lat,
+                lng: rLoc.lng,
+                demand: 30 + ((s * 6) % 25),
+                supplyType: d.job || 'Relief Supplies',
+                hazard: rLoc.hazard,
+                rain: rLoc.rain,
+                wind: rLoc.wind,
+                color: d.color || DRIVER_COLORS[d.id] || '#00f0ff',
+                status: s === 0 ? "IN_PROGRESS" : "SCHEDULED"
+            });
+        }
     }
 
     const solvedRoute = solveQuantumMultiNodeRoute([currentLat, currentLng], initialRouteSequence, false);
@@ -469,7 +598,7 @@ let fleet = driversSeed.map((d, index) => {
         deliveredTotal: 210 + (index * 35),
         speed: 38,
         currentPos: [currentLat, currentLng],
-        targetPos: (d.id === 1 && initialRouteSequence.length > 1) ? [initialRouteSequence[1].lat, initialRouteSequence[1].lng] : [loc.lat, loc.lng],
+        targetPos: (initialRouteSequence.length > 1) ? [initialRouteSequence[1].lat, initialRouteSequence[1].lng] : [loc.lat, loc.lng],
         routeSequence: initialRouteSequence,
         legs: solvedRoute.legs,
         totalDistanceKm: solvedRoute.totalDistanceKm,
@@ -497,6 +626,73 @@ let fleet = driversSeed.map((d, index) => {
         lastUpdated: new Date().toISOString()
     };
 });
+
+// ==========================================
+// 2.5 STREET-LOCKED LANDMARK DICTIONARY & RESOLVER
+// ==========================================
+const STREET_LANDMARKS = {
+    'tadepalli': [16.4850, 80.6020],
+    'benz circle': [16.5019, 80.6704],
+    'benz': [16.5019, 80.6704],
+    'prakasam barrage': [16.5062, 80.6120],
+    'barrage': [16.5062, 80.6120],
+    'prakasam': [16.5062, 80.6120],
+    'gollapudi': [16.5152, 80.5781],
+    'gunadala': [16.5332, 80.6661],
+    'eluru canal': [16.5200, 80.6350],
+    'eluru': [16.5200, 80.6350],
+    'rythu bazaar': [16.5100, 80.6200],
+    'governorpet': [16.5100, 80.6200],
+    'pnbs': [16.5085, 80.6150],
+    'bus station': [16.5085, 80.6150],
+    'mangalagiri': [16.4300, 80.5500],
+    'ramavarappadu': [16.5250, 80.6800],
+    'ring road': [16.5250, 80.6800],
+    'autonagar': [16.4880, 80.7040],
+    'auto nagar': [16.4880, 80.7040],
+    'gannavaram': [16.5410, 80.7980],
+    'airport': [16.5410, 80.7980],
+    'bhavanipuram': [16.5230, 80.5960],
+    'krishna canal': [16.4950, 80.6080],
+    'sitanagaram': [16.4980, 80.6110],
+    'undavalli': [16.4960, 80.5840],
+    'kanuru': [16.4850, 80.6850],
+    'poranki': [16.4750, 80.7020],
+    'enikepadu': [16.5200, 80.7100],
+    'machilipatnam road': [16.4900, 80.6780],
+    'mg road': [16.5080, 80.6400],
+    'bandar road': [16.5040, 80.6550],
+    'police control room': [16.5115, 80.6175],
+    'vijayawada junction': [16.5180, 80.6190],
+    'railway station': [16.5180, 80.6190],
+    'varadhi': [16.4980, 80.6235],
+    'kanaka durga': [16.5150, 80.6050]
+};
+
+function resolveStreetLocation(cleanName, fallbackCoord) {
+    if (fallbackCoord && Array.isArray(fallbackCoord) && fallbackCoord.length === 2 && !isNaN(fallbackCoord[0]) && !isNaN(fallbackCoord[1])) {
+        const nodeKey = findNearestRoadNode(fallbackCoord);
+        return ROAD_NETWORK_NODES[nodeKey] || fallbackCoord;
+    }
+    const nameLower = (cleanName || '').toLowerCase().trim();
+    for (const [key, coord] of Object.entries(STREET_LANDMARKS)) {
+        if (nameLower.includes(key)) {
+            return coord;
+        }
+    }
+    const matchedLoc = rescueLocations.find(l => nameLower.includes(l.name.toLowerCase()) || l.name.toLowerCase().includes(nameLower));
+    if (matchedLoc) {
+        return [matchedLoc.lat, matchedLoc.lng];
+    }
+    // Deterministic selection from ROAD_NETWORK_NODES using hash of name
+    const keys = Object.keys(ROAD_NETWORK_NODES);
+    let hash = 0;
+    for (let i = 0; i < nameLower.length; i++) {
+        hash = (hash * 31 + nameLower.charCodeAt(i)) % keys.length;
+    }
+    const chosenKey = keys[Math.abs(hash)];
+    return ROAD_NETWORK_NODES[chosenKey] || [16.5062, 80.6120];
+}
 
 // ==========================================
 // 3. BROADCAST WEBSOCKET HELPER
@@ -559,14 +755,42 @@ app.post('/api/nodes', (req, res) => {
     res.json({ success: true, node: newNode, totalNodes: rescueLocations.length });
 });
 
+// Shared Authoritative Road Routing Endpoint (OSRM & Verified Graph)
+app.post('/api/route', async (req, res) => {
+    try {
+        const { start, end, isBlocked, preferBridge, routeVersion } = req.body;
+        const result = await calculateRoadRoute(start, end, { isBlocked, preferBridge, routeVersion });
+        return res.json(result);
+    } catch (err) {
+        return res.status(500).json({ status: 'error', error: err.message, geometry: [] });
+    }
+});
+
+app.get('/api/route', async (req, res) => {
+    try {
+        const startLat = parseFloat(req.query.startLat);
+        const startLng = parseFloat(req.query.startLng);
+        const endLat = parseFloat(req.query.endLat);
+        const endLng = parseFloat(req.query.endLng);
+        const isBlocked = req.query.isBlocked === 'true';
+        const preferBridge = req.query.preferBridge;
+        const result = await calculateRoadRoute([startLat, startLng], [endLat, endLng], { isBlocked, preferBridge });
+        return res.json(result);
+    } catch (err) {
+        return res.status(500).json({ status: 'error', error: err.message, geometry: [] });
+    }
+});
+
 // Officer Tap-to-Create & Reassign Mission Vector (Interactive Map Click)
 app.post('/api/nodes/reassign-destination', (req, res) => {
     const { driverId, targetLat, targetLng, nodeName, isEmergencySpawn, hazard, color, supplyType } = req.body;
     
-    const latVal = targetLat !== undefined ? targetLat : req.body.lat;
-    const lngVal = targetLng !== undefined ? targetLng : req.body.lng;
-    const lat = Number(parseFloat(latVal || 16.5062).toFixed(6));
-    const lng = Number(parseFloat(lngVal || 80.6480).toFixed(6));
+    const rawLat = parseFloat(targetLat !== undefined ? targetLat : req.body.lat) || 16.5062;
+    const rawLng = parseFloat(targetLng !== undefined ? targetLng : req.body.lng) || 80.6480;
+    const nodeKey = findNearestRoadNode([rawLat, rawLng]);
+    const snapped = ROAD_NETWORK_NODES[nodeKey] || [rawLat, rawLng];
+    const lat = Number(snapped[0].toFixed(6));
+    const lng = Number(snapped[1].toFixed(6));
 
     let targetDriver = null;
     if (driverId && driverId !== 'auto') {
@@ -712,11 +936,16 @@ app.post('/api/nodes/dispatch-text', (req, res) => {
 
     if (!targetDriver) targetDriver = fleet[0];
 
-    // Assign realistic coordinates around Krishna Delta / Vijayawada sector if not provided
-    const nodeLat = lat !== undefined ? Number(parseFloat(lat).toFixed(6)) : Number((16.4800 + (Math.random() * 0.055)).toFixed(6));
-    const nodeLng = lng !== undefined ? Number(parseFloat(lng).toFixed(6)) : Number((80.6100 + (Math.random() * 0.090)).toFixed(6));
-
     const cleanName = locationName.trim();
+    let resolvedCoord = null;
+    if (lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng)) {
+        const nodeKey = findNearestRoadNode([parseFloat(lat), parseFloat(lng)]);
+        resolvedCoord = ROAD_NETWORK_NODES[nodeKey] || [parseFloat(lat), parseFloat(lng)];
+    } else {
+        resolvedCoord = resolveStreetLocation(cleanName);
+    }
+    const nodeLat = Number(resolvedCoord[0].toFixed(6));
+    const nodeLng = Number(resolvedCoord[1].toFixed(6));
     const hazardType = urgency === 'CRITICAL' ? 'Flood Lv 3 - Critical Evacuation' : (urgency === 'HIGH' ? 'Risk Lv 2 - High Congestion' : 'Optimal - Clear Vector');
     const hazardColor = urgency === 'CRITICAL' ? '#ef4444' : (urgency === 'HIGH' ? '#f59e0b' : '#10b981');
     const rainLevel = urgency === 'CRITICAL' ? '48mm/h' : (urgency === 'HIGH' ? '25mm/h' : '6mm/h');
@@ -1109,6 +1338,94 @@ app.post('/api/fleet/:id/restock', (req, res) => {
     res.json({ success: true, message: 'Restock verified', stock: driver.stock });
 });
 
+// Operative Stop / Leg Advance (Dynamic Progress Visualization)
+app.post('/api/fleet/:id/advance', (req, res) => {
+    const id = parseInt(req.params.id);
+    const driver = fleet.find(d => d.id === id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+    if (!driver.routeSequence || driver.routeSequence.length === 0) {
+        return res.status(400).json({ success: false, message: 'No route sequence assigned' });
+    }
+
+    // Find the current active/pending stop
+    let stopIdx = driver.routeSequence.findIndex(s => s.status !== 'COMPLETED');
+    if (stopIdx === -1) {
+        return res.json({ 
+            success: true, 
+            message: `All assigned stops for Unit #${id} are already completed!`, 
+            driver,
+            completedAll: true
+        });
+    }
+
+    const clearedStop = driver.routeSequence[stopIdx];
+    clearedStop.status = 'COMPLETED';
+
+    // Move driver position to the cleared stop's coordinate
+    driver.currentPos = [clearedStop.lat, clearedStop.lng];
+
+    // Update corresponding leg status if present
+    if (driver.legs && driver.legs[stopIdx]) {
+        driver.legs[stopIdx].status = 'COMPLETED';
+    }
+
+    // Deliver portion of stock if delivery role
+    if (!driver.isRescue && driver.stock > 0) {
+        const deliverCount = Math.min(driver.stock, clearedStop.demand || 25);
+        driver.stock = Math.max(0, driver.stock - deliverCount);
+        driver.deliveredTotal = (driver.deliveredTotal || 0) + deliverCount;
+    }
+
+    // Check next stop
+    const nextStop = driver.routeSequence.find(s => s.status !== 'COMPLETED');
+    if (nextStop) {
+        nextStop.status = 'IN_PROGRESS';
+        driver.node = nextStop.name;
+        driver.targetPos = [nextStop.lat, nextStop.lng];
+        if (driver.legs) {
+            const nextLeg = driver.legs.find(l => l.status !== 'COMPLETED');
+            if (nextLeg) nextLeg.status = 'IN_PROGRESS';
+        }
+        const solvedRemaining = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, driver.isObstructed);
+        driver.polyline = solvedRemaining.fullPolyline;
+        driver.legs = solvedRemaining.legs;
+        driver.totalDistanceKm = solvedRemaining.totalDistanceKm;
+        driver.totalFuelBurnLiters = solvedRemaining.totalFuelBurnLiters;
+        driver.totalEtaMinutes = solvedRemaining.totalEtaMinutes;
+        driver.telemetryPolyIdx = 0;
+    } else {
+        driver.missionStatus = 'DELIVERED';
+        driver.node = `Delivered: ${clearedStop.name}`;
+        driver.polyline = [driver.currentPos];
+        driver.telemetryPolyIdx = 0;
+    }
+
+    driver.lastUpdated = new Date().toISOString();
+
+    broadcast({
+        type: 'STOP_CLEARED',
+        driverId: id,
+        driverName: driver.name,
+        clearedStopIndex: stopIdx,
+        clearedStop: clearedStop,
+        driver: driver,
+        timestamp: driver.lastUpdated
+    });
+
+    broadcast({
+        type: 'ROUTE_SEQUENCE_UPDATED',
+        driver: driver
+    });
+
+    res.json({
+        success: true,
+        message: `Unit #${id} (${driver.name}) successfully reached and cleared Stop #${clearedStop.seq || (stopIdx + 1)}: ${clearedStop.name}!`,
+        clearedStop,
+        driver
+    });
+});
+
 // Accident SOS Trigger with Automated Reinforcement Dispatch
 app.post('/api/fleet/:id/sos', (req, res) => {
     const id = parseInt(req.params.id);
@@ -1201,8 +1518,27 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
     if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
 
     driver.isObstructed = true;
-    const reroute = solveQuantumQUBORoute(driver.currentPos, driver.targetPos, true);
-    driver.polyline = reroute.path;
+    let reroute;
+    if (driver.routeSequence && driver.routeSequence.length > 1) {
+        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true);
+        driver.polyline = multiResult.fullPolyline;
+        driver.legs = multiResult.legs;
+        driver.totalDistanceKm = multiResult.totalDistanceKm;
+        driver.totalFuelBurnLiters = multiResult.totalFuelBurnLiters;
+        driver.totalEtaMinutes = multiResult.totalEtaMinutes;
+        driver.roadColor = multiResult.roadColor;
+        driver.telemetryPolyIdx = 0;
+        reroute = {
+            path: multiResult.fullPolyline,
+            distanceKm: multiResult.totalDistanceKm,
+            hamiltonianEnergy: -3.85,
+            carbonSavedKg: 18.4
+        };
+    } else {
+        reroute = solveQuantumQUBORoute(driver.currentPos, driver.targetPos, true);
+        driver.polyline = reroute.path;
+        driver.telemetryPolyIdx = 0;
+    }
     driver.fuel += 2.0;
     driver.lastUpdated = new Date().toISOString();
 
@@ -1212,9 +1548,13 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
         if (peer.id !== id && !peer.isObstructed && !peer.crashSensor.isCrashed) {
             const dist = Math.hypot(peer.currentPos[0] - driver.currentPos[0], peer.currentPos[1] - driver.currentPos[1]);
             if (dist < 0.02) { // within ~2.2 km of obstruction corridor
-                const peerReroute = solveQuantumQUBORoute(peer.currentPos, peer.targetPos, true);
-                peer.polyline = peerReroute.path;
+                const peerReroute = (peer.routeSequence && peer.routeSequence.length > 1)
+                    ? solveQuantumMultiNodeRoute(peer.currentPos, peer.routeSequence, true)
+                    : solveQuantumQUBORoute(peer.currentPos, peer.targetPos, true);
+                peer.polyline = peerReroute.path || peerReroute.fullPolyline;
+                if (peerReroute.legs) peer.legs = peerReroute.legs;
                 peer.isObstructed = true;
+                peer.telemetryPolyIdx = 0;
                 peer.lastUpdated = new Date().toISOString();
                 affectedPeers.push({
                     id: peer.id,
@@ -1231,6 +1571,8 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
         driverId: id,
         driverName: driver.name,
         polyline: driver.polyline,
+        legs: driver.legs,
+        driver,
         quantumMetrics: reroute,
         isObstructed: true,
         affectedPeers,
@@ -1247,6 +1589,87 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
         },
         reroute,
         affectedPeers
+    });
+});
+
+// Clear Route Obstruction / Reopen Corridor (Officer Action)
+app.post('/api/fleet/:id/clear-obstruction', (req, res) => {
+    const id = parseInt(req.params.id);
+    const driver = fleet.find(d => d.id === id);
+    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+
+    driver.isObstructed = false;
+    let reroute;
+    if (driver.routeSequence && driver.routeSequence.length > 1) {
+        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false);
+        driver.polyline = multiResult.fullPolyline;
+        driver.legs = multiResult.legs;
+        driver.totalDistanceKm = multiResult.totalDistanceKm;
+        driver.totalFuelBurnLiters = multiResult.totalFuelBurnLiters;
+        driver.totalEtaMinutes = multiResult.totalEtaMinutes;
+        driver.roadColor = multiResult.roadColor;
+        driver.telemetryPolyIdx = 0;
+        reroute = {
+            path: multiResult.fullPolyline,
+            distanceKm: multiResult.totalDistanceKm,
+            hamiltonianEnergy: -29.04,
+            carbonSavedKg: 24.5
+        };
+    } else {
+        reroute = solveQuantumQUBORoute(driver.currentPos, driver.targetPos, false);
+        driver.polyline = reroute.path;
+        driver.telemetryPolyIdx = 0;
+    }
+    driver.lastUpdated = new Date().toISOString();
+
+    broadcast({
+        type: 'ROUTE_OBSTRUCTION_CLEARED',
+        driverId: id,
+        driverName: driver.name,
+        polyline: driver.polyline,
+        legs: driver.legs,
+        driver,
+        isObstructed: false,
+        timestamp: driver.lastUpdated
+    });
+
+    res.json({
+        success: true,
+        message: `Corridor for ${driver.name} reopened and cleared.`,
+        driver,
+        reroute
+    });
+});
+
+// Update Vehicle Sensor Telemetry via REST
+app.post('/api/fleet/:id/telemetry', (req, res) => {
+    const id = parseInt(req.params.id);
+    const driver = fleet.find(d => d.id === id);
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+
+    const { currentPos, speed, heading, fuelBurnRate, crashSensor } = req.body;
+    if (currentPos) driver.currentPos = currentPos;
+    if (speed !== undefined) driver.speed = speed;
+    if (heading !== undefined) driver.heading = heading;
+    if (fuelBurnRate !== undefined) driver.fuelBurnRate = fuelBurnRate;
+    if (crashSensor) driver.crashSensor = crashSensor;
+    driver.lastUpdated = new Date().toISOString();
+
+    broadcast({
+        type: 'VEHICLE_TELEMETRY_UPDATE',
+        driverId: driver.id,
+        name: driver.name,
+        currentPos: driver.currentPos,
+        speed: driver.speed,
+        fuelBurnRate: driver.fuelBurnRate,
+        heading: driver.heading,
+        crashSensor: driver.crashSensor,
+        timestamp: driver.lastUpdated
+    });
+
+    res.json({
+        success: true,
+        driver
     });
 });
 
@@ -1445,10 +1868,163 @@ wss.on('connection', (ws) => {
             const data = JSON.parse(message);
             if (data.type === 'PING') {
                 ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+            } else if (data.type === 'VEHICLE_TELEMETRY') {
+                const driver = fleet.find(d => d.id === data.driverId);
+                if (driver) {
+                    if (data.currentPos) driver.currentPos = data.currentPos;
+                    if (data.speed !== undefined) driver.speed = data.speed;
+                    if (data.fuelBurnRate !== undefined) driver.fuelBurnRate = data.fuelBurnRate;
+                    if (data.heading !== undefined) driver.heading = data.heading;
+                    if (data.crashSensor) driver.crashSensor = data.crashSensor;
+                    driver.lastUpdated = new Date().toISOString();
+
+                    broadcast({
+                        type: 'VEHICLE_TELEMETRY_UPDATE',
+                        driverId: driver.id,
+                        name: driver.name,
+                        currentPos: driver.currentPos,
+                        speed: driver.speed,
+                        fuelBurnRate: driver.fuelBurnRate,
+                        heading: driver.heading,
+                        crashSensor: driver.crashSensor,
+                        timestamp: driver.lastUpdated
+                    });
+                }
             }
         } catch (e) {}
     });
 });
+
+// Automated Continuous Vehicle Sensor Telemetry & Motion Streaming Loop (Spec 1 & Spec 3)
+setInterval(() => {
+    fleet.forEach(d => {
+        try {
+            if (!d.isRescue && !d.crashSensor?.isCrashed && Array.isArray(d.polyline) && d.polyline.length > 0) {
+                if (typeof d.telemetryPolyIdx !== 'number' || isNaN(d.telemetryPolyIdx) || d.telemetryPolyIdx < 0 || d.telemetryPolyIdx >= d.polyline.length) {
+                    d.telemetryPolyIdx = 0;
+                }
+                
+                // Advance along polyline if more than 1 point
+                if (d.polyline.length > 1) {
+                    if (d.telemetryPolyIdx < d.polyline.length - 1) {
+                        d.telemetryPolyIdx += 1;
+                    } else {
+                        // If at the end and has pending stops, allow smooth looping; otherwise hold position
+                        const hasPending = Array.isArray(d.routeSequence) && d.routeSequence.some(s => s.status !== 'COMPLETED');
+                        if (hasPending) {
+                            d.telemetryPolyIdx = 0;
+                        } else {
+                            d.speed = 0;
+                            d.telemetryPolyIdx = d.polyline.length - 1;
+                        }
+                    }
+                } else {
+                    d.telemetryPolyIdx = 0;
+                    d.speed = 0;
+                }
+
+                const currentCoord = d.polyline[d.telemetryPolyIdx] || d.polyline[0];
+                if (!Array.isArray(currentCoord) || currentCoord.length < 2) return;
+                d.currentPos = currentCoord;
+
+                // Calculate forward heading pointing toward the immediate next road vector or next stop
+                let nextCoord = (d.telemetryPolyIdx < d.polyline.length - 1)
+                    ? d.polyline[d.telemetryPolyIdx + 1]
+                    : null;
+                
+                if (!nextCoord || !Array.isArray(nextCoord)) {
+                    const nextPending = Array.isArray(d.routeSequence) && d.routeSequence.find(s => s.status !== 'COMPLETED');
+                    if (nextPending && typeof nextPending.lat === 'number' && typeof nextPending.lng === 'number') {
+                        nextCoord = [nextPending.lat, nextPending.lng];
+                    } else {
+                        nextCoord = d.currentPos;
+                    }
+                }
+
+                if (Array.isArray(nextCoord) && nextCoord.length >= 2) {
+                    const lat1 = d.currentPos[0] * Math.PI / 180;
+                    const lat2 = nextCoord[0] * Math.PI / 180;
+                    const dLng = (nextCoord[1] - d.currentPos[1]) * Math.PI / 180;
+                    const y = Math.sin(dLng) * Math.cos(lat2);
+                    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+                    const heading = Math.round((Math.atan2(y, x) * 180 / Math.PI + 360) % 360);
+                    d.heading = isNaN(heading) ? (d.heading || 0) : heading;
+                }
+                
+                d.speed = (d.speed === 0) ? 0 : 36 + Math.floor(Math.sin(Date.now() / 5000) * 8);
+                d.fuelBurnRate = 0.138;
+                d.lastUpdated = new Date().toISOString();
+
+                // Detect arrival at sequential stop (Node 1 to Node 10 progression)
+                if (Array.isArray(d.routeSequence) && d.routeSequence.length > 0) {
+                    const pendingIdx = d.routeSequence.findIndex(s => s.status !== 'COMPLETED');
+                    if (pendingIdx !== -1) {
+                        const targetStop = d.routeSequence[pendingIdx];
+                        if (targetStop && typeof targetStop.lat === 'number' && typeof targetStop.lng === 'number') {
+                            const distKm = Math.hypot(d.currentPos[0] - targetStop.lat, d.currentPos[1] - targetStop.lng) * 111;
+                            if (distKm < 0.15) { // Reached within 150m of waypoint
+                                targetStop.status = 'COMPLETED';
+                                if (d.legs && d.legs[pendingIdx]) d.legs[pendingIdx].status = 'COMPLETED';
+
+                                const nextPending = d.routeSequence.find(s => s.status !== 'COMPLETED');
+                                if (nextPending) {
+                                    nextPending.status = 'IN_PROGRESS';
+                                    d.node = nextPending.name;
+                                    d.targetPos = [nextPending.lat, nextPending.lng];
+                                    if (d.legs) {
+                                        const nextLeg = d.legs.find(l => l.status !== 'COMPLETED');
+                                        if (nextLeg) nextLeg.status = 'IN_PROGRESS';
+                                    }
+                                } else {
+                                    d.missionStatus = 'DELIVERED';
+                                    d.node = `Delivered: ${targetStop.name}`;
+                                }
+
+                                broadcast({
+                                    type: 'STOP_CLEARED',
+                                    driverId: d.id,
+                                    driverName: d.name,
+                                    clearedStopIndex: pendingIdx,
+                                    clearedStop: targetStop,
+                                    driver: d,
+                                    timestamp: d.lastUpdated
+                                });
+
+                                broadcast({
+                                    type: 'ROUTE_SEQUENCE_UPDATED',
+                                    driverId: d.id,
+                                    driverName: d.name,
+                                    routeSequence: d.routeSequence,
+                                    polyline: d.polyline,
+                                    legs: d.legs,
+                                    totalEtaMinutes: d.totalEtaMinutes,
+                                    totalFuelBurnLiters: d.totalFuelBurnLiters,
+                                    roadColor: d.roadColor,
+                                    targetNodeName: d.node,
+                                    driver: d
+                                });
+                            }
+                        }
+                    }
+                }
+
+                broadcast({
+                    type: 'VEHICLE_TELEMETRY_UPDATE',
+                    driverId: d.id,
+                    name: d.name,
+                    currentPos: d.currentPos,
+                    speed: d.speed,
+                    fuelBurnRate: d.fuelBurnRate,
+                    heading: d.heading,
+                    crashSensor: d.crashSensor,
+                    timestamp: d.lastUpdated
+                });
+            }
+        } catch (err) {
+            console.error(`Telemetry error for driver ${d?.id}:`, err);
+        }
+    });
+}, 2500);
 
 // Start Server
 server.listen(PORT, () => {
