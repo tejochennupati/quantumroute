@@ -10,6 +10,10 @@ const {
     DRIVER_COLORS,
     DRIVER_COLOR_NAMES,
     ROAD_NETWORK_NODES,
+    ROAD_NETWORK_EDGES,
+    ROAD_NODE_NAMES,
+    formatRoadEdgeName,
+    findNearestRoadEdge,
     findNearestRoadNode,
     validateDestinationAccessibility
 } = require('./js/config.js');
@@ -382,7 +386,7 @@ function solveQuantumTSP(startCoord, stops = [], isBlocked = false) {
     }));
 }
 
-function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed = false, optimizeTSP = true) {
+function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed = false, optimizeTSP = true, blockedEdges = []) {
     const isBlocked = !!isObstructed;
     if (!routeSequence || routeSequence.length === 0) {
         return {
@@ -421,8 +425,9 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
         };
     }
 
+    // When an obstruction is reported, strictly PRESERVE the approved sequential order (Spec 5 & Spec 7)
     let activePending = pendingStops;
-    if (optimizeTSP && pendingStops.length > 1) {
+    if (optimizeTSP && !isBlocked && (!blockedEdges || blockedEdges.length === 0) && pendingStops.length > 1) {
         activePending = solveQuantumTSP(startPos, pendingStops, isBlocked);
     }
 
@@ -440,7 +445,7 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
     let totalEtaMinutes = 0;
     let totalFuelBurnLiters = 0;
     let totalCarbonSavedKg = 0;
-    let worstColor = '#10b981'; // Green by default
+    let worstColor = isBlocked ? '#ef4444' : '#10b981';
 
     // 1. Preserve completed stops in legs list without routing backward
     completedStops.forEach((stop, cIdx) => {
@@ -499,8 +504,39 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
             if (worstColor !== '#ef4444') worstColor = '#f59e0b';
         }
 
-        // Compute road-snapped leg path vertices via land roads and bridges (Spec 2)
-        const legPath = getRoadSnappedPath(current, dest, hasSevereFlood);
+        // Compute road-snapped leg path vertices via land roads and bridges, strictly avoiding blocked edges
+        const legPath = getRoadSnappedPath(current, dest, hasSevereFlood, blockedEdges);
+
+        if (!legPath || legPath.length < 2) {
+            legs.push({
+                seq: stop.seq || (idx + 1),
+                nodeId: stop.nodeId || stop.id,
+                from: idx === 0 ? "Driver Live Position" : activePending[idx - 1].name,
+                to: stop.name,
+                lat: stop.lat,
+                lng: stop.lng,
+                demand: stop.demand || 50,
+                supplyType: stop.supplyType || 'Food Supply',
+                status: "BLOCKED",
+                distanceKm: 0,
+                cumulativeDistanceKm: Number(totalDistanceKm.toFixed(2)),
+                etaMinutes: 0,
+                cumulativeEtaMinutes: Number(totalEtaMinutes.toFixed(1)),
+                fuelBurnLiters: 0,
+                cumulativeFuelBurnLiters: Number(totalFuelBurnLiters.toFixed(2)),
+                classicalFuelLiters: 0,
+                carbonSavedKg: 0,
+                speedKmH: 0,
+                color: '#ef4444',
+                hazardStatus: "Corridor Obstructed - No Verified Road Alternative",
+                path: [[stop.lat, stop.lng]],
+                isUnreachable: true
+            });
+            worstColor = '#ef4444';
+            current = dest;
+            return;
+        }
+
         let pathDist = 0;
         for (let p = 0; p < legPath.length - 1; p++) {
             pathDist += Math.hypot(legPath[p + 1][0] - legPath[p][0], legPath[p + 1][1] - legPath[p][1]) * 111;
@@ -520,7 +556,7 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
         legs.push({
             seq: stop.seq || (idx + 1),
             nodeId: stop.nodeId || stop.id,
-            from: idx === 0 ? "Current Vehicle Position" : activePending[idx - 1].name,
+            from: idx === 0 ? "Driver Live Position" : activePending[idx - 1].name,
             to: stop.name,
             lat: stop.lat,
             lng: stop.lng,
@@ -572,7 +608,7 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
     };
 }
 
-function solveQuantumQUBORoute(startPos, endPos, isObstructed = false) {
+function solveQuantumQUBORoute(startPos, endPos, isObstructed = false, blockedEdges = []) {
     const singleSeq = [{
         seq: 1,
         name: "Target Destination Node",
@@ -582,7 +618,7 @@ function solveQuantumQUBORoute(startPos, endPos, isObstructed = false) {
         rain: isObstructed ? "50mm/h" : "5mm/h",
         wind: isObstructed ? "45 km/h" : "20 km/h"
     }];
-    const solved = solveQuantumMultiNodeRoute(startPos, singleSeq, isObstructed);
+    const solved = solveQuantumMultiNodeRoute(startPos, singleSeq, isObstructed, false, blockedEdges);
     return {
         path: solved.fullPolyline,
         distanceKm: solved.totalDistanceKm,
@@ -600,7 +636,8 @@ function solveQuantumQUBORoute(startPos, endPos, isObstructed = false) {
     };
 }
 
-let fleet = driversSeed.map((d, index) => {
+function generateInitialFleet() {
+    return driversSeed.map((d, index) => {
     const loc = rescueLocations[d.nodeIndex];
     const currentLat = loc.lat;
     const currentLng = loc.lng;
@@ -684,6 +721,19 @@ let fleet = driversSeed.map((d, index) => {
         },
         lastUpdated: new Date().toISOString()
     };
+    });
+}
+
+let fleet = generateInitialFleet();
+
+function resetFleet() {
+    fleet = generateInitialFleet();
+    return fleet;
+}
+
+app.post('/api/fleet/reset', (req, res) => {
+    resetFleet();
+    res.json({ success: true, count: fleet.length });
 });
 
 // ==========================================
@@ -1726,9 +1776,16 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
     }
 
     driver.isObstructed = true;
+    const blockedEdge = req.body?.blockedEdge;
+    const segmentName = req.body?.segmentName;
+    if (blockedEdge) {
+        driver.blockedEdges = driver.blockedEdges || [];
+        driver.blockedEdges.push(blockedEdge);
+    }
+
     let reroute;
     if (driver.routeSequence && driver.routeSequence.length > 1) {
-        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true);
+        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true, false, driver.blockedEdges);
         driver.polyline = multiResult.fullPolyline;
         driver.legs = multiResult.legs;
         driver.totalDistanceKm = multiResult.totalDistanceKm;
@@ -1743,12 +1800,41 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
             carbonSavedKg: 18.4
         };
     } else {
-        reroute = solveQuantumQUBORoute(driver.currentPos, driver.targetPos, true);
+        reroute = solveQuantumQUBORoute(driver.currentPos, driver.targetPos, true, driver.blockedEdges);
         driver.polyline = reroute.path;
+        driver.totalDistanceKm = reroute.distanceKm;
+        driver.totalFuelBurnLiters = reroute.fuelEst;
+        driver.totalEtaMinutes = reroute.etaMinutes;
+        driver.roadColor = reroute.roadColor;
         driver.telemetryPolyIdx = 0;
     }
     driver.fuel += 2.0;
     driver.lastUpdated = new Date().toISOString();
+
+    // Create persistent officer alert for road obstruction
+    const activeTarget = (driver.routeSequence || []).find(s => s.status !== 'COMPLETED') || driver.routeSequence[0] || { name: driver.node, lat: driver.targetPos[0], lng: driver.targetPos[1] };
+    const alert = {
+        id: 'ALT-' + Date.now().toString(36).toUpperCase(),
+        type: 'ROUTE_OBSTRUCTION',
+        severity: 'HIGH',
+        driverId: id,
+        driverName: driver.name,
+        driverColor: driver.color || '#00f0ff',
+        destinationNode: activeTarget.name || driver.node,
+        destinationCoords: [activeTarget.lat || driver.targetPos[0], activeTarget.lng || driver.targetPos[1]],
+        currentPos: driver.currentPos,
+        reason: `Corridor Closed: ${segmentName || (blockedEdge ? (Array.isArray(blockedEdge) ? blockedEdge.join(' ↔ ') : blockedEdge) : 'Corridor Segment')}`,
+        notes: `Road segment reported closed. Driver ${driver.name} rerouted from live position toward active destination "${activeTarget.name}".`,
+        status: 'ACTIVE',
+        timestamp: driver.lastUpdated
+    };
+    systemAlerts.unshift(alert);
+    if (systemAlerts.length > 50) systemAlerts.pop();
+
+    broadcast({
+        type: 'SYSTEM_ALERT_CREATED',
+        alert
+    });
 
     // Preemptively check if any other peer trucks cross near this blocked corridor
     const affectedPeers = [];
@@ -1756,8 +1842,10 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
         if (peer.id !== id && !peer.isObstructed && !peer.crashSensor.isCrashed) {
             const dist = Math.hypot(peer.currentPos[0] - driver.currentPos[0], peer.currentPos[1] - driver.currentPos[1]);
             if (dist < 0.02) { // within ~2.2 km of obstruction corridor
+                peer.blockedEdges = peer.blockedEdges || [];
+                if (blockedEdge) peer.blockedEdges.push(blockedEdge);
                 const peerReroute = (peer.routeSequence && peer.routeSequence.length > 1)
-                    ? solveQuantumMultiNodeRoute(peer.currentPos, peer.routeSequence, true)
+                    ? solveQuantumMultiNodeRoute(peer.currentPos, peer.routeSequence, true, false, peer.blockedEdges)
                     : solveQuantumQUBORoute(peer.currentPos, peer.targetPos, true);
                 peer.polyline = peerReroute.path || peerReroute.fullPolyline;
                 if (peerReroute.legs) peer.legs = peerReroute.legs;
@@ -1778,6 +1866,8 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
         type: 'ROUTE_OBSTRUCTION_REROUTE',
         driverId: id,
         driverName: driver.name,
+        blockedEdge,
+        segmentName,
         polyline: driver.polyline,
         legs: driver.legs,
         driver,
@@ -1796,6 +1886,7 @@ app.post('/api/fleet/:id/obstruction', (req, res) => {
             tunnelingCorridor: 'Bypassing High-Water Vector'
         },
         reroute,
+        alert,
         affectedPeers
     });
 });
@@ -1812,9 +1903,10 @@ app.post('/api/fleet/:id/clear-obstruction', (req, res) => {
     }
 
     driver.isObstructed = false;
+    driver.blockedEdges = [];
     let reroute;
     if (driver.routeSequence && driver.routeSequence.length > 1) {
-        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false);
+        const multiResult = solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false, false, []);
         driver.polyline = multiResult.fullPolyline;
         driver.legs = multiResult.legs;
         driver.totalDistanceKm = multiResult.totalDistanceKm;

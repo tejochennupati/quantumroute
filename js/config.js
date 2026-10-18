@@ -3954,8 +3954,143 @@ function findNearestRoadNode(coord, mustBeSouth = null) {
     return nearestKey || (mustBeSouth ? 'TADEPALLI' : 'PNBS');
 }
 
-function findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge = null, isBlocked = false) {
+// Human-readable road node landmarks for sector identification
+const ROAD_NODE_NAMES = {
+    'BARRAGE_NORTH': 'Prakasam Barrage North Entry',
+    'BARRAGE_APPROACH_N': 'Barrage North Approach',
+    'BARRAGE_MID': 'Prakasam Barrage Deck (Mid-Span)',
+    'BARRAGE_HEAD_S': 'Barrage South Head',
+    'BARRAGE_SOUTH': 'Prakasam Barrage South Ramp',
+    'SEETHANAGARAM': 'Seethanagaram Riverbank Road',
+    'TADEPALLI': 'Tadepalli High Ground Sector',
+    'VARADHI_NORTH': 'Kanaka Durga Varadhi North Access',
+    'VARADHI_SPAN_N': 'Varadhi North Span (NH16)',
+    'VARADHI_MID': 'Varadhi Bridge Deck (Mid-Span)',
+    'VARADHI_SPAN_S': 'Varadhi South Span',
+    'VARADHI_SOUTH': 'Varadhi South Ramp',
+    'VARADHI_NH16_S': 'NH16 Tadepalli Highway Junction',
+    'KAZA_JUNCTION': 'Kaza NH16 Junction',
+    'MANGALAGIRI_BYPASS': 'Mangalagiri Bypass Expressway',
+    'MANGALAGIRI_TOWN': 'Mangalagiri Town Main Road',
+    'MANGALAGIRI': 'Mangalagiri Relief Depot',
+    'PNBS': 'PNBS Central Staging Depot',
+    'KUMMARIPALEM': 'Kummaripalem Center',
+    'BHAVANIPURAM': 'Bhavanipuram Sector',
+    'BHAVANI_DOCK': 'Bhavani Island Riverbank Dock',
+    'GOLLAPUDI_ENTRY': 'Gollapudi Toll Road Corridor',
+    'GOLLAPUDI': 'Gollapudi Emergency Sector',
+    'RYTHU_BAZAAR': 'Governorpet Rythu Bazaar Hub',
+    'GOVERNORPET': 'Governorpet Commercial Avenue',
+    'MG_ROAD_CENTER': 'MG Road Central Corridor',
+    'TIKLE_ROAD': 'Tikle Road Arterial',
+    'BENZ_CIRCLE': 'Benz Circle Elevated Junction',
+    'RAILWAY_STATION': 'Vijayawada Junction Rail Terminal',
+    'ELURU_ROAD_WEST': 'Eluru Road West Link',
+    'ELURU_CANAL': 'Eluru Canal Road Corridor',
+    'MACHAVARAM': 'Machavaram Down-Town Corridor',
+    'GUNADALA': 'Gunadala Relief Sector',
+    'GUNADALA_RING': 'Gunadala Ring Connector',
+    'RAMAVARAPPADU': 'Ramavarappadu Flyover Junction',
+    'RAMAVARAPPADU_RING': 'Ramavarappadu Outer Ring Highway',
+    'PATAMATA': 'Patamata High Street',
+    'KANURU': 'Kanuru Emergency Point',
+    'AUTONAGAR': 'Autonagar Industrial Logistics Area',
+    'AUTONAGAR_GATE': 'Autonagar Main Gateway',
+    'AUTONAGAR_100FT': 'Autonagar 100-Ft Freight Road',
+    'PORANKI': 'Poranki Relief Sector',
+    'TADIGADAPA': 'Tadigadapa Canal Link',
+    'PENAMALURU': 'Penamaluru Depot Hub',
+    'GURUNANAK_COLONY': 'Gurunanak Colony Highway Spur',
+    'PRASADAMPADU': 'Prasadampadu Freight Sector',
+    'ENIKEPADU': 'Enikepadu NH16 Corridor',
+    'NIDAMANURU': 'Nidamanuru Logistics Point',
+    'GUDAVALLI': 'Gudavalli Transit Hub',
+    'KESARAPALLI': 'Kesarapalli Highway Approach',
+    'GANNAVARAM': 'Gannavaram Airport Relief Staging'
+};
+
+function formatRoadEdgeName(u, v) {
+    const uName = ROAD_NODE_NAMES[u] || u;
+    const vName = ROAD_NODE_NAMES[v] || v;
+    return `${uName} ↔ ${vName}`;
+}
+
+/**
+ * Snaps a clicked map coordinate to the closest valid road edge in ROAD_NETWORK_EDGES.
+ * Returns { edge: [u, v], u, v, distanceKm, name } or null if beyond maxDistKm.
+ */
+function findNearestRoadEdge(coord, maxDistKm = 0.8) {
+    if (!coord || !Array.isArray(coord) || coord.length < 2) return null;
+    const cLat = parseFloat(coord[0]);
+    const cLng = parseFloat(coord[1]);
+    if (isNaN(cLat) || isNaN(cLng)) return null;
+
+    let bestEdge = null;
+    let minDistance = Infinity;
+
+    function distToSegmentSquared(pLat, pLng, vLat, vLng, wLat, wLng) {
+        const l2 = (vLat - wLat) * (vLat - wLat) + (vLng - wLng) * (vLng - wLng);
+        if (l2 === 0) return (pLat - vLat) * (pLat - vLat) + (pLng - vLng) * (pLng - vLng);
+        let t = ((pLat - vLat) * (wLat - vLat) + (pLng - vLng) * (wLng - vLng)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        const projLat = vLat + t * (wLat - vLat);
+        const projLng = vLng + t * (wLng - vLng);
+        return (pLat - projLat) * (pLat - projLat) + (pLng - projLng) * (pLng - projLng);
+    }
+
+    ROAD_NETWORK_EDGES.forEach(([u, v]) => {
+        const uCoord = ROAD_NETWORK_NODES[u];
+        const vCoord = ROAD_NETWORK_NODES[v];
+        if (!uCoord || !vCoord) return;
+
+        const edgeKey = `${u}->${v}`;
+        const revKey = `${v}->${u}`;
+        const detailedPts = DETAILED_ROAD_EDGE_GEOMETRIES[edgeKey] || DETAILED_ROAD_EDGE_GEOMETRIES[revKey];
+
+        let edgeMinSq = Infinity;
+        if (detailedPts && detailedPts.length >= 2) {
+            for (let i = 0; i < detailedPts.length - 1; i++) {
+                const sq = distToSegmentSquared(cLat, cLng, detailedPts[i][0], detailedPts[i][1], detailedPts[i+1][0], detailedPts[i+1][1]);
+                if (sq < edgeMinSq) edgeMinSq = sq;
+            }
+        } else {
+            edgeMinSq = distToSegmentSquared(cLat, cLng, uCoord[0], uCoord[1], vCoord[0], vCoord[1]);
+        }
+
+        const distKm = Math.sqrt(edgeMinSq) * 111;
+        if (distKm < minDistance) {
+            minDistance = distKm;
+            bestEdge = [u, v];
+        }
+    });
+
+    if (minDistance <= maxDistKm && bestEdge) {
+        return {
+            edge: bestEdge,
+            u: bestEdge[0],
+            v: bestEdge[1],
+            distanceKm: Number(minDistance.toFixed(3)),
+            name: formatRoadEdgeName(bestEdge[0], bestEdge[1])
+        };
+    }
+    return null;
+}
+
+function findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge = null, isBlocked = false, blockedEdges = []) {
     if (startNodeKey === endNodeKey) return [ROAD_NETWORK_NODES[startNodeKey]];
+
+    const isEdgeBlocked = (n1, n2) => {
+        if (!blockedEdges || !Array.isArray(blockedEdges) || blockedEdges.length === 0) return false;
+        return blockedEdges.some(b => {
+            if (Array.isArray(b)) {
+                return (b[0] === n1 && b[1] === n2) || (b[0] === n2 && b[1] === n1);
+            }
+            if (typeof b === 'string') {
+                return b === `${n1}->${n2}` || b === `${n2}->${n1}` || (b.includes(n1) && b.includes(n2));
+            }
+            return false;
+        });
+    };
 
     // Build adjacency list
     const adj = {};
@@ -3987,6 +4122,10 @@ function findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge = null
         visited.add(u);
 
         for (const neighbor of adj[u]) {
+            // Strictly exclude blocked road edge from traversal
+            if (isEdgeBlocked(u, neighbor.node)) {
+                continue;
+            }
             if (!visited.has(neighbor.node)) {
                 let edgeCost = neighbor.cost;
                 // If preferred bridge specified, penalize alternative bridge
@@ -4015,6 +4154,11 @@ function findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge = null
     }
 
     if (pathKeys[0] !== startNodeKey) {
+        // If specific blocked edges cut off the path, do NOT synthesize a fake path
+        if (blockedEdges && blockedEdges.length > 0) {
+            return null;
+        }
+
         const sSouth = isSouthOfRiver(ROAD_NETWORK_NODES[startNodeKey]);
         const eSouth = isSouthOfRiver(ROAD_NETWORK_NODES[endNodeKey]);
         if (sSouth !== eSouth) {
@@ -4066,7 +4210,7 @@ function findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge = null
  * 100% road-clamped, zero zig-zags, zero lines cutting across water or forests.
  * Guarantees between 5 and 50+ roadway coordinates (strictly banning 2-point direct polylines).
  */
-function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
+function getRoadSnappedPath(startCoord, endCoord, isBlocked = false, blockedEdges = []) {
     const sLat = Number(Number(startCoord[0]).toFixed(6));
     const sLng = Number(Number(startCoord[1]).toFixed(6));
     const eLat = Number(Number(endCoord[0]).toFixed(6));
@@ -4086,7 +4230,9 @@ function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
         ];
     }
 
-    // 1. Direct match in precomputed real-world road library
+    const hasSpecificBlockedEdges = blockedEdges && Array.isArray(blockedEdges) && blockedEdges.length > 0;
+
+    // 1. Direct match in precomputed real-world road library (only when NO specific road blockage is active)
     const startLoc = RESCUE_LOCATIONS.find(n => Math.hypot(n.lat - sLat, n.lng - sLng) < 0.0015);
     const endLoc = RESCUE_LOCATIONS.find(n => Math.hypot(n.lat - eLat, n.lng - eLng) < 0.0015);
 
@@ -4094,40 +4240,39 @@ function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
         const directKey = startLoc.id + '->' + endLoc.id;
         const reverseKey = endLoc.id + '->' + startLoc.id;
 
-        if (!isBlocked && PRECOMPUTED_ROAD_PATHS[directKey]) {
+        if (!isBlocked && !hasSpecificBlockedEdges && PRECOMPUTED_ROAD_PATHS[directKey]) {
             const pts = PRECOMPUTED_ROAD_PATHS[directKey].coords.map(pt => [...pt]);
             pts[0] = [sLat, sLng];
             pts[pts.length - 1] = [eLat, eLng];
             return densifyRoadCoordinates(pts, 0.08);
         }
 
-        if (!isBlocked && PRECOMPUTED_ROAD_PATHS[reverseKey]) {
+        if (!isBlocked && !hasSpecificBlockedEdges && PRECOMPUTED_ROAD_PATHS[reverseKey]) {
             const pts = [...PRECOMPUTED_ROAD_PATHS[reverseKey].coords].reverse().map(pt => [...pt]);
             pts[0] = [sLat, sLng];
             pts[pts.length - 1] = [eLat, eLng];
             return densifyRoadCoordinates(pts, 0.08);
         }
+    }
 
-            }
-
-    // 2. Direct check for Tadepalli <-> PNBS river crossing (Test 18)
+    // 2. Direct check for Tadepalli <-> PNBS river crossing (when unblocked)
     const isTadepalliPNBS = Math.hypot(sLat - 16.4850, sLng - 80.6020) < 0.005 && Math.hypot(eLat - 16.5085, eLng - 80.6150) < 0.005;
     const isPNBSTadepalli = Math.hypot(sLat - 16.5085, sLng - 80.6150) < 0.005 && Math.hypot(eLat - 16.4850, eLng - 80.6020) < 0.005;
 
-    if (isTadepalliPNBS && PRECOMPUTED_ROAD_PATHS['TADEPALLI->PNBS']) {
+    if (!isBlocked && !hasSpecificBlockedEdges && isTadepalliPNBS && PRECOMPUTED_ROAD_PATHS['TADEPALLI->PNBS']) {
         const pts = PRECOMPUTED_ROAD_PATHS['TADEPALLI->PNBS'].coords.map(pt => [...pt]);
         pts[0] = [sLat, sLng];
         pts[pts.length - 1] = [eLat, eLng];
         return densifyRoadCoordinates(pts, 0.08);
     }
-    if (isPNBSTadepalli && PRECOMPUTED_ROAD_PATHS['PNBS->TADEPALLI']) {
+    if (!isBlocked && !hasSpecificBlockedEdges && isPNBSTadepalli && PRECOMPUTED_ROAD_PATHS['PNBS->TADEPALLI']) {
         const pts = PRECOMPUTED_ROAD_PATHS['PNBS->TADEPALLI'].coords.map(pt => [...pt]);
         pts[0] = [sLat, sLng];
         pts[pts.length - 1] = [eLat, eLng];
         return densifyRoadCoordinates(pts, 0.08);
     }
 
-    // 3. Fallback for custom map click / newly deployed nodes
+    // 3. Fallback for custom map click / newly deployed nodes / active road blockades
     const startNodeKey = findNearestRoadNode([sLat, sLng], sSouth);
     const endNodeKey = findNearestRoadNode([eLat, eLng], eSouth);
 
@@ -4135,14 +4280,33 @@ function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
     if (sSouth !== eSouth) {
         const distToBarrage = Math.hypot(sLat - 16.5062, sLng - 80.6120);
         const distToVaradhi = Math.hypot(sLat - 16.4980, sLng - 80.6235);
-        if (isBlocked) {
+
+        // Check if barrage or varadhi has blocked edges
+        const barrageBlocked = hasSpecificBlockedEdges && blockedEdges.some(b => {
+            const str = Array.isArray(b) ? b.join(' ') : String(b);
+            return str.includes('BARRAGE');
+        });
+        const varadhiBlocked = hasSpecificBlockedEdges && blockedEdges.some(b => {
+            const str = Array.isArray(b) ? b.join(' ') : String(b);
+            return str.includes('VARADHI');
+        });
+
+        if (barrageBlocked && !varadhiBlocked) {
+            preferBridge = 'VARADHI';
+        } else if (varadhiBlocked && !barrageBlocked) {
+            preferBridge = 'BARRAGE';
+        } else if (isBlocked) {
             preferBridge = distToBarrage < distToVaradhi ? 'VARADHI' : 'BARRAGE';
         } else {
             preferBridge = distToBarrage < distToVaradhi ? 'BARRAGE' : 'VARADHI';
         }
     }
 
-    const graphPath = findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge, isBlocked);
+    const graphPath = findShortestRoadGraphPath(startNodeKey, endNodeKey, preferBridge, isBlocked, blockedEdges);
+    if (!graphPath || graphPath.length === 0) {
+        // No valid road alternative exists - return null to indicate road network cannot traverse
+        return null;
+    }
 
     const fullPath = [[sLat, sLng]];
 
@@ -4166,17 +4330,33 @@ function getRoadSnappedPath(startCoord, endCoord, isBlocked = false) {
             (Math.hypot(pt[0] - 16.4980, pt[1] - 80.6235) < 0.006)    // Kanaka Durga Varadhi
         );
         if (!hasBridgePoint) {
-            const bridgeChoice = preferBridge || (Math.hypot(sLat - 16.5062, sLng - 80.6120) < Math.hypot(sLat - 16.4980, sLng - 80.6235) ? 'BARRAGE' : 'VARADHI');
+            const barrageBlocked = hasSpecificBlockedEdges && blockedEdges.some(b => {
+                const str = Array.isArray(b) ? b.join(' ') : String(b);
+                return str.includes('BARRAGE');
+            });
+            const varadhiBlocked = hasSpecificBlockedEdges && blockedEdges.some(b => {
+                const str = Array.isArray(b) ? b.join(' ') : String(b);
+                return str.includes('VARADHI');
+            });
+
+            if (barrageBlocked && varadhiBlocked) {
+                // Both bridges blocked - strictly return null
+                return null;
+            }
+
+            const bridgeChoice = barrageBlocked ? 'VARADHI' : (varadhiBlocked ? 'BARRAGE' : (preferBridge || (Math.hypot(sLat - 16.5062, sLng - 80.6120) < Math.hypot(sLat - 16.4980, sLng - 80.6235) ? 'BARRAGE' : 'VARADHI')));
             const northEntry = bridgeChoice === 'BARRAGE' ? 'BARRAGE_NORTH' : 'VARADHI_NORTH';
             const southExit = 'TADEPALLI';
             const bridgeSpan = bridgeChoice === 'BARRAGE' 
                 ? [ROAD_NETWORK_NODES.BARRAGE_NORTH, ROAD_NETWORK_NODES.BARRAGE_APPROACH_N, ROAD_NETWORK_NODES.BARRAGE_MID, ROAD_NETWORK_NODES.BARRAGE_HEAD_S, ROAD_NETWORK_NODES.BARRAGE_SOUTH, ROAD_NETWORK_NODES.TADEPALLI]
                 : [ROAD_NETWORK_NODES.VARADHI_NORTH, ROAD_NETWORK_NODES.VARADHI_SPAN_N, ROAD_NETWORK_NODES.VARADHI_MID, ROAD_NETWORK_NODES.VARADHI_SPAN_S, ROAD_NETWORK_NODES.VARADHI_SOUTH, ROAD_NETWORK_NODES.TADEPALLI];
             
-            const startLeg = sSouth ? findShortestRoadGraphPath(startNodeKey, southExit) : findShortestRoadGraphPath(startNodeKey, northEntry);
+            const startLeg = sSouth ? findShortestRoadGraphPath(startNodeKey, southExit, null, isBlocked, blockedEdges) : findShortestRoadGraphPath(startNodeKey, northEntry, null, isBlocked, blockedEdges);
             const bridgeLeg = sSouth ? bridgeSpan.slice().reverse() : bridgeSpan;
-            const endLeg = sSouth ? findShortestRoadGraphPath(northEntry, endNodeKey) : findShortestRoadGraphPath(southExit, endNodeKey);
+            const endLeg = sSouth ? findShortestRoadGraphPath(northEntry, endNodeKey, null, isBlocked, blockedEdges) : findShortestRoadGraphPath(southExit, endNodeKey, null, isBlocked, blockedEdges);
             
+            if (!startLeg || !endLeg) return null;
+
             const assembled = [[sLat, sLng]];
             if (startLeg) {
                 for (const pt of startLeg) {
@@ -4518,6 +4698,9 @@ if (typeof window !== 'undefined') {
     window.resolveStreetLocation = resolveStreetLocation;
     window.ROAD_NETWORK_NODES = ROAD_NETWORK_NODES;
     window.ROAD_NETWORK_EDGES = ROAD_NETWORK_EDGES;
+    window.ROAD_NODE_NAMES = ROAD_NODE_NAMES;
+    window.formatRoadEdgeName = formatRoadEdgeName;
+    window.findNearestRoadEdge = findNearestRoadEdge;
     window.generateDriverFleet = generateDriverFleet;
     window.validateDestinationAccessibility = validateDestinationAccessibility;
     window.getRiverCenterlineLat = getRiverCenterlineLat;
@@ -4537,6 +4720,9 @@ if (typeof module !== 'undefined' && module.exports) {
         PRECOMPUTED_ROAD_PATHS,
         ROAD_NETWORK_NODES,
         ROAD_NETWORK_EDGES,
+        ROAD_NODE_NAMES,
+        formatRoadEdgeName,
+        findNearestRoadEdge,
         DETAILED_ROAD_EDGE_GEOMETRIES,
         densifyRoadCoordinates,
         RIVER_CROSSING_REFERENCES,

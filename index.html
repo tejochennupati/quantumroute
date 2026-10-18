@@ -1446,9 +1446,9 @@
                 <!-- Real-Road Telemetry Metrics Grid -->
                 <div class="grid grid-cols-3 gap-2">
                     <div class="bg-[#010409] p-3 rounded-xl border border-[#30363d] text-center">
-                        <span class="text-[9px] text-slate-400 uppercase font-semibold block mb-0.5">Distance Remaining</span>
+                        <span class="text-[9px] text-slate-400 uppercase font-semibold block mb-0.5">Active Target Dist</span>
                         <span id="route-info-distance-remaining" class="text-sm font-extrabold text-[#00f0ff] font-mono">3.42 km</span>
-                        <span class="text-[8px] text-slate-500 block mt-0.5">Along active road</span>
+                        <span class="text-[8px] text-slate-500 block mt-0.5">Driver live to active node</span>
                     </div>
                     <div class="bg-[#010409] p-3 rounded-xl border border-[#30363d] text-center">
                         <span class="text-[9px] text-slate-400 uppercase font-semibold block mb-0.5">Est. Fuel Burn</span>
@@ -1462,6 +1462,18 @@
                     </div>
                 </div>
 
+                <!-- Mission Distance Separation: Active vs Total Remaining vs Total Planned -->
+                <div class="grid grid-cols-2 gap-2 text-[10px] bg-[#010409] p-2.5 rounded-xl border border-[#30363d] font-mono">
+                    <div class="flex justify-between items-center pr-2 border-r border-slate-800">
+                        <span class="text-slate-400">Total Remaining:</span>
+                        <span id="route-info-total-remaining" class="text-white font-bold">12.85 km</span>
+                    </div>
+                    <div class="flex justify-between items-center pl-2">
+                        <span class="text-slate-400">Total Planned:</span>
+                        <span id="route-info-total-planned" class="text-[#00f0ff] font-bold">14.20 km</span>
+                    </div>
+                </div>
+
                 <!-- Navigation Maneuver & Road Geometry Info -->
                 <div class="bg-[#010409] p-3 rounded-xl border border-[#30363d] space-y-1.5">
                     <div class="flex items-center space-x-2 text-[#00f0ff] text-[10px] font-bold uppercase">
@@ -1470,6 +1482,35 @@
                     </div>
                     <p id="route-info-maneuver" class="text-xs font-semibold text-white">Cross Prakasam Barrage Bridge Span toward Tadepalli</p>
                     <p id="route-info-maneuver-sub" class="text-[10px] text-slate-400">Verified river crossing deck • Heavy transport approved thoroughfare</p>
+                </div>
+
+                <!-- Consecutive Emergency Node Legs (Real Road Distances) -->
+                <div class="bg-[#010409] p-3 rounded-xl border border-[#30363d] space-y-2">
+                    <div class="flex items-center justify-between text-[11px] pb-1 border-b border-slate-800">
+                        <span class="text-slate-400 font-bold uppercase tracking-wider text-[10px] flex items-center gap-1.5">
+                            <i class="fa-solid fa-list-ol text-[#00f0ff]"></i>
+                            <span>Consecutive Node Legs (Road Distances)</span>
+                        </span>
+                        <span id="route-info-legs-count-badge" class="px-2 py-0.5 bg-[#00f0ff]/10 text-[#00f0ff] border border-[#00f0ff]/30 rounded text-[9px] font-mono font-bold">10 LEGS</span>
+                    </div>
+                    <div id="route-info-legs-breakdown" class="space-y-1.5 max-h-44 overflow-y-auto pr-1 text-[10px]">
+                        <!-- Injected dynamically via renderRouteInfoLegsBreakdown -->
+                    </div>
+                </div>
+
+                <!-- Selected Segment Context & Route Closed Action -->
+                <div id="route-info-segment-box" class="bg-[#010409] p-3 rounded-xl border border-amber-500/40 space-y-2">
+                    <div class="flex items-center justify-between text-[11px]">
+                        <span class="text-slate-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-road text-amber-400"></i>
+                            <span>Selected Road Segment:</span>
+                        </span>
+                        <span id="route-info-segment-name" class="font-bold text-amber-300 truncate max-w-[210px]">Prakasam Barrage Deck</span>
+                    </div>
+                    <button id="route-info-block-btn" onclick="triggerRouteBlockForSelectedSegment()" class="w-full py-2.5 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/50 rounded-xl text-xs font-bold transition uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg">
+                        <i class="fa-solid fa-road-barrier"></i>
+                        <span>Route Closed: Block Segment & Detour</span>
+                    </button>
                 </div>
 
                 <!-- Coords & Routing Profile -->

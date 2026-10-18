@@ -1066,7 +1066,7 @@ function updateTurnByTurnNavBanner(driver) {
  * Open Dedicated Route Information Panel (Requirement 1 & 2)
  * Shows distance remaining along real road geometry, estimated fuel burn, ETA, route status, and navigation details.
  */
-function openRouteInfoPanel(driver) {
+function openRouteInfoPanel(driver, selectedSegment) {
     if (!driver) return;
     audioEngine.playBeep(780, 0.08);
 
@@ -1078,12 +1078,17 @@ function openRouteInfoPanel(driver) {
     const originEl = document.getElementById('route-info-origin');
     const destEl = document.getElementById('route-info-destination');
     const distRemEl = document.getElementById('route-info-distance-remaining');
+    const totalRemEl = document.getElementById('route-info-total-remaining');
+    const totalPlannedEl = document.getElementById('route-info-total-planned');
     const fuelBurnEl = document.getElementById('route-info-fuel-burn');
     const etaEl = document.getElementById('route-info-eta');
     const maneuverEl = document.getElementById('route-info-maneuver');
     const maneuverSubEl = document.getElementById('route-info-maneuver-sub');
     const curCoordsEl = document.getElementById('route-info-coords-cur');
     const tgtCoordsEl = document.getElementById('route-info-coords-tgt');
+    const legsListEl = document.getElementById('route-info-legs-breakdown');
+    const legsCountBadge = document.getElementById('route-info-legs-count-badge');
+    const segNameEl = document.getElementById('route-info-segment-name');
 
     if (titleEl) titleEl.innerText = `Route Telemetry • Unit #${driver.id}`;
     if (nameEl) nameEl.innerText = `Unit #${driver.id}: ${driver.name}`;
@@ -1109,35 +1114,89 @@ function openRouteInfoPanel(driver) {
         }
     }
 
+    // Determine current active destination node
+    const activeStop = (driver.routeSequence || []).find(s => s.status !== 'COMPLETED') || driver.routeSequence[0] || { name: driver.node, seq: 1, lat: driver.targetPos[0], lng: driver.targetPos[1] };
     const startNode = (driver.routeSequence && driver.routeSequence.length > 0) ? driver.routeSequence[0].name : 'Vijayawada Central Staging';
-    if (originEl) originEl.innerText = startNode;
-    if (destEl) destEl.innerText = driver.node || 'Disaster Relief Point';
+    if (originEl) originEl.innerText = `Driver Live GPS (${driver.currentPos ? `${driver.currentPos[0].toFixed(4)}, ${driver.currentPos[1].toFixed(4)}` : startNode})`;
+    if (destEl) destEl.innerText = `Node ${activeStop.seq || 1}: ${activeStop.name || driver.node}`;
 
-    // Calculate real road distance remaining along active road geometry + pending sequential legs
-    let remDistKm = 0;
+    // 1. Calculate road distance from driver's current position to active node along active road geometry (Requirement 2 & 8)
+    let activeLegDistKm = 0;
     const { activeCoords } = splitRouteSegments(driver);
     if (activeCoords && activeCoords.length > 1) {
         for (let i = 0; i < activeCoords.length - 1; i++) {
-            remDistKm += Math.hypot(activeCoords[i+1][0] - activeCoords[i][0], activeCoords[i+1][1] - activeCoords[i][1]) * 111;
+            activeLegDistKm += Math.hypot(activeCoords[i+1][0] - activeCoords[i][0], activeCoords[i+1][1] - activeCoords[i][1]) * 111;
         }
     }
-    if (driver.legs && driver.legs.length > 0) {
-        const pendingLegs = driver.legs.filter(l => l.status !== 'COMPLETED');
-        if (pendingLegs.length > 1) {
-            for (let k = 1; k < pendingLegs.length; k++) {
-                remDistKm += parseFloat(pendingLegs[k].distanceKm) || 0;
-            }
-        }
+    if (activeLegDistKm <= 0.05 && driver.legs && driver.legs.length > 0) {
+        const activeLeg = driver.legs.find(l => l.status === 'IN_PROGRESS') || driver.legs.find(l => l.status !== 'COMPLETED');
+        if (activeLeg) activeLegDistKm = parseFloat(activeLeg.distanceKm) || 1.8;
     }
-    if (remDistKm <= 0.05) {
-        remDistKm = driver.totalDistanceKm || 2.45;
-    }
-    remDistKm = Number((remDistKm * 1.05).toFixed(2));
-    const fuelLiters = Number((remDistKm * 0.138).toFixed(2));
-    const speed = driver.speed || 38;
-    const etaMins = Math.max(1, Math.round((remDistKm / speed) * 60));
+    activeLegDistKm = Number(Math.max(0.1, activeLegDistKm).toFixed(2));
 
-    if (distRemEl) distRemEl.innerText = `${remDistKm} km`;
+    // 2. Calculate remaining consecutive node-to-node legs
+    let futureLegsDistKm = 0;
+    let totalPlannedDistKm = 0;
+    const legBreakdownItems = [];
+
+    (driver.routeSequence || []).forEach((stop, sIdx) => {
+        const seqNum = stop.seq || (sIdx + 1);
+        const leg = (driver.legs && driver.legs.length >= seqNum) ? driver.legs[seqNum - 1] : null;
+        const plannedDist = leg ? parseFloat(leg.distanceKm) : (parseFloat(stop.distanceKm) || 1.8);
+        totalPlannedDistKm += plannedDist;
+
+        const fromName = sIdx === 0 ? "Driver Live Location" : `Node ${sIdx} (${driver.routeSequence[sIdx - 1].name})`;
+        const toName = `Node ${seqNum}: ${stop.name}`;
+        const isCompleted = stop.status === 'COMPLETED' || (leg && leg.status === 'COMPLETED');
+        const isActive = !isCompleted && stop.id === activeStop.id;
+        const isBlocked = stop.status === 'BLOCKED' || (leg && leg.status === 'BLOCKED');
+
+        if (isActive) {
+            legBreakdownItems.push({
+                seq: seqNum,
+                from: "Driver (Live GPS)",
+                to: `Node ${seqNum}: ${stop.name}`,
+                roadDist: activeLegDistKm,
+                plannedDist: Number(plannedDist.toFixed(2)),
+                status: isBlocked ? 'BLOCKED' : 'ACTIVE',
+                etaMins: Math.max(1, Math.round((activeLegDistKm / (driver.speed || 38)) * 60))
+            });
+        } else if (!isCompleted) {
+            futureLegsDistKm += plannedDist;
+            legBreakdownItems.push({
+                seq: seqNum,
+                from: `Node ${seqNum - 1} (${driver.routeSequence[sIdx - 1].name})`,
+                to: `Node ${seqNum}: ${stop.name}`,
+                roadDist: Number(plannedDist.toFixed(2)),
+                plannedDist: Number(plannedDist.toFixed(2)),
+                status: isBlocked ? 'BLOCKED' : 'PENDING',
+                etaMins: Math.max(1, Math.round((plannedDist / (driver.speed || 38)) * 60))
+            });
+        } else {
+            legBreakdownItems.push({
+                seq: seqNum,
+                from: fromName,
+                to: `Node ${seqNum}: ${stop.name}`,
+                roadDist: Number(plannedDist.toFixed(2)),
+                plannedDist: Number(plannedDist.toFixed(2)),
+                status: 'COMPLETED',
+                etaMins: 0
+            });
+        }
+    });
+
+    // 3. Keep values strictly separated: active leg distance, remaining total, and total planned
+    const totalRemainingKm = Number((activeLegDistKm + futureLegsDistKm).toFixed(2));
+    totalPlannedDistKm = Number(Math.max(totalRemainingKm, totalPlannedDistKm).toFixed(2));
+
+    if (distRemEl) distRemEl.innerText = `${activeLegDistKm} km`;
+    if (totalRemEl) totalRemEl.innerText = `${totalRemainingKm} km`;
+    if (totalPlannedEl) totalPlannedEl.innerText = `${totalPlannedDistKm} km`;
+
+    const fuelLiters = Number((totalRemainingKm * 0.138).toFixed(2));
+    const speed = driver.speed || 38;
+    const etaMins = Math.max(1, Math.round((totalRemainingKm / speed) * 60));
+
     if (fuelBurnEl) fuelBurnEl.innerText = `${fuelLiters} L`;
     if (etaEl) etaEl.innerText = `${etaMins} MIN`;
 
@@ -1148,8 +1207,96 @@ function openRouteInfoPanel(driver) {
     if (curCoordsEl && driver.currentPos) {
         curCoordsEl.innerText = `${driver.currentPos[0].toFixed(4)}, ${driver.currentPos[1].toFixed(4)}`;
     }
-    if (tgtCoordsEl && driver.targetPos) {
-        tgtCoordsEl.innerText = `${driver.targetPos[0].toFixed(4)}, ${driver.targetPos[1].toFixed(4)}`;
+    if (tgtCoordsEl && activeStop) {
+        tgtCoordsEl.innerText = `${(activeStop.lat || driver.targetPos[0]).toFixed(4)}, ${(activeStop.lng || driver.targetPos[1]).toFixed(4)}`;
+    }
+
+    // Render consecutive node legs breakdown
+    if (legsCountBadge) legsCountBadge.innerText = `${legBreakdownItems.length} LEGS`;
+    if (legsListEl) {
+        legsListEl.innerHTML = legBreakdownItems.map(item => {
+            if (item.status === 'ACTIVE') {
+                return `
+                    <div class="p-2.5 rounded-xl bg-cyan-950/40 border border-[#00f0ff]/50 font-mono text-[10px] space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-[#00f0ff] flex items-center gap-1.5 truncate">
+                                <span class="w-4 h-4 rounded-full bg-[#00f0ff] text-black font-extrabold flex items-center justify-center text-[9px]">${item.seq}</span>
+                                <span class="truncate">${item.from} → ${item.to}</span>
+                            </span>
+                            <span class="px-1.5 py-0.2 bg-[#00f0ff]/20 text-[#00f0ff] border border-[#00f0ff]/40 rounded text-[8px] font-extrabold uppercase">
+                                ACTIVE LEG
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] text-slate-300 pt-1 border-t border-cyan-800/40">
+                            <span>Remaining Road Dist: <b class="text-white">${item.roadDist} km</b></span>
+                            <span class="text-slate-400">Planned: ${item.plannedDist} km • ETA: ${item.etaMins}m</span>
+                        </div>
+                    </div>
+                `;
+            } else if (item.status === 'BLOCKED') {
+                return `
+                    <div class="p-2 rounded-xl bg-red-950/30 border border-red-500/40 font-mono text-[10px] space-y-0.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-red-300 flex items-center gap-1.5 truncate">
+                                <span class="w-4 h-4 rounded-full bg-red-600 text-white font-extrabold flex items-center justify-center text-[9px]">${item.seq}</span>
+                                <span class="truncate">${item.from} → ${item.to}</span>
+                            </span>
+                            <span class="px-1.5 py-0.2 bg-red-500/20 text-red-400 border border-red-500/40 rounded text-[8px] font-bold uppercase">
+                                BLOCKED
+                            </span>
+                        </div>
+                        <div class="text-[8px] text-red-400">No verified road alternative available. Corridor obstructed.</div>
+                    </div>
+                `;
+            } else if (item.status === 'PENDING') {
+                return `
+                    <div class="p-2 rounded-xl bg-[#010409] border border-[#30363d] font-mono text-[10px] space-y-1">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-white flex items-center gap-1.5 truncate">
+                                <span class="w-4 h-4 rounded-full bg-slate-800 text-slate-300 font-extrabold flex items-center justify-center text-[9px]">${item.seq}</span>
+                                <span class="truncate">${item.from} → ${item.to}</span>
+                            </span>
+                            <span class="px-1.5 py-0.2 bg-slate-800 text-slate-400 rounded text-[8px] font-bold uppercase">
+                                PENDING
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] text-slate-400 pt-1 border-t border-slate-800">
+                            <span>Road Distance: <b class="text-white">${item.roadDist} km</b></span>
+                            <span>ETA: ${item.etaMins}m</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                return `
+                    <div class="p-2 rounded-xl bg-emerald-950/20 border border-emerald-500/20 font-mono text-[10px]">
+                        <div class="flex items-center justify-between">
+                            <span class="text-emerald-400/80 flex items-center gap-1.5 truncate">
+                                <span class="w-4 h-4 rounded-full bg-emerald-600/60 text-black font-extrabold flex items-center justify-center text-[9px]">✓</span>
+                                <span class="truncate">${item.to}</span>
+                            </span>
+                            <span class="text-[8px] font-bold text-emerald-400">CLEARED (${item.roadDist} km)</span>
+                        </div>
+                    </div>
+                `;
+            }
+        }).join('');
+    }
+
+    // Set selected road segment context
+    const seg = selectedSegment || state.selectedRoadSegment;
+    if (seg && seg.name) {
+        state.selectedRoadSegment = seg;
+        if (segNameEl) segNameEl.innerText = seg.name;
+    } else {
+        const nearestEdge = (typeof findNearestRoadEdge === 'function') ? findNearestRoadEdge(driver.currentPos, 1.2) : null;
+        const defaultName = nearestEdge ? nearestEdge.name : 'Prakasam Barrage Deck (BARRAGE_NORTH ↔ BARRAGE_APPROACH_N)';
+        state.selectedRoadSegment = {
+            driverId: driver.id,
+            driverName: driver.name,
+            edge: nearestEdge ? nearestEdge.edge : ['BARRAGE_NORTH', 'BARRAGE_APPROACH_N'],
+            name: defaultName
+        };
+        if (segNameEl) segNameEl.innerText = defaultName;
     }
 
     openModal('route-info-modal');
@@ -1898,7 +2045,7 @@ function expandDriverMap(id) {
         const onFullMapRouteClick = (e) => {
             if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
             else if (e && e.stopPropagation) e.stopPropagation();
-            openRouteInfoPanel(driver);
+            handleRouteSegmentClick(driver, e ? e.latlng : null, e, state.fullMap);
         };
 
         if (!state.fullMap) {
@@ -2044,6 +2191,21 @@ function buildLegsHTML(driver) {
     }
 
     const driverColor = driver.color || (typeof DRIVER_COLORS !== 'undefined' ? DRIVER_COLORS[driver.id] : '#00f0ff');
+    const activeIdx = driver.routeSequence.findIndex(s => s.status !== 'COMPLETED');
+
+    const { activeCoords } = splitRouteSegments(driver);
+    let liveRemKm = 0;
+    if (activeCoords && activeCoords.length > 1) {
+        for (let i = 0; i < activeCoords.length - 1; i++) {
+            liveRemKm += Math.hypot(activeCoords[i+1][0] - activeCoords[i][0], activeCoords[i+1][1] - activeCoords[i][1]) * 111;
+        }
+    }
+    if (liveRemKm <= 0.05 && driver.legs && driver.legs.length > 0) {
+        const al = driver.legs.find(l => l.status === 'IN_PROGRESS') || driver.legs.find(l => l.status !== 'COMPLETED');
+        if (al) liveRemKm = parseFloat(al.distanceKm) || 1.8;
+    }
+    liveRemKm = Number(Math.max(0.1, liveRemKm).toFixed(2));
+
     return driver.routeSequence.map((stop, sIdx) => {
         const seqNum = stop.seq || (sIdx + 1);
         const matchingLeg = (driver.legs && driver.legs.length >= seqNum) ? driver.legs[seqNum - 1] : null;
@@ -2054,26 +2216,36 @@ function buildLegsHTML(driver) {
         const legEta = matchingLeg ? matchingLeg.etaMinutes : (stop.etaMinutes || '4.5');
         const cumulEta = matchingLeg && matchingLeg.cumulativeEtaMinutes ? matchingLeg.cumulativeEtaMinutes : (stop.cumulativeEtaMinutes || legEta);
         const isCompleted = stop.status === 'COMPLETED' || (matchingLeg && matchingLeg.status === 'COMPLETED');
-        const cardClass = isCompleted ? 'leg-status-completed' : 'leg-status-active';
+        const isActive = !isCompleted && sIdx === activeIdx;
+        const isBlocked = stop.status === 'BLOCKED' || (matchingLeg && matchingLeg.status === 'BLOCKED');
+
+        const fromLabel = sIdx === 0 ? "Driver Live GPS" : `Node ${sIdx} (${driver.routeSequence[sIdx - 1].name})`;
+        const toLabel = `Node ${seqNum}: ${stop.name}`;
+
+        const cardClass = isCompleted ? 'leg-status-completed' : (isBlocked ? 'border-red-500/50 bg-red-950/20' : (isActive ? 'leg-status-active ring-1 ring-[#00f0ff]/50' : 'leg-status-pending'));
 
         return `
-            <div class="p-2 rounded-lg bg-[#161b22]/90 border border-[#30363d] hover:border-[#00f0ff]/50 transition text-[10px] ${cardClass}">
+            <div class="p-2.5 rounded-lg bg-[#161b22]/90 border border-[#30363d] hover:border-[#00f0ff]/50 transition text-[10px] ${cardClass}">
                 <div class="flex items-center justify-between mb-1">
                     <span class="font-bold text-white flex items-center gap-1.5 truncate">
-                        <span class="w-4 h-4 rounded-full flex items-center justify-center font-bold text-[9px] text-black" style="background:${isCompleted ? '#10b981' : driverColor}">
+                        <span class="w-4 h-4 rounded-full flex items-center justify-center font-bold text-[9px] text-black" style="background:${isCompleted ? '#10b981' : (isBlocked ? '#ef4444' : driverColor)}">
                             ${isCompleted ? '✓' : seqNum}
                         </span>
-                        <span class="truncate">${stop.name}</span>
+                        <span class="truncate">${toLabel}</span>
                     </span>
-                    <span class="text-[8px] font-mono px-1 py-0.5 rounded ${isCompleted ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 text-slate-300'} whitespace-nowrap">
-                        ${isCompleted ? 'CLEARED' : `${legEta}m (Σ ${cumulEta}m)`}
+                    <span class="text-[8px] font-mono px-1.5 py-0.5 rounded ${isCompleted ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : (isBlocked ? 'bg-red-950 text-red-400 border border-red-500/30' : (isActive ? 'bg-cyan-950 text-[#00f0ff] border border-cyan-500/40 font-bold' : 'bg-slate-800 text-slate-300'))} whitespace-nowrap">
+                        ${isCompleted ? 'CLEARED' : (isBlocked ? 'BLOCKED' : (isActive ? `ACTIVE • ${legEta}m` : `${legEta}m (Σ ${cumulEta}m)`))}
                     </span>
+                </div>
+                <div class="text-[9px] text-slate-400 mb-1 flex items-center gap-1 truncate font-sans">
+                    <span class="text-slate-500">From:</span>
+                    <span class="text-slate-300 truncate">${fromLabel}</span>
                 </div>
                 <div class="grid grid-cols-2 gap-1 text-[9px] font-mono text-slate-400 pt-1 border-t border-slate-800">
-                    <div>Dist: <span class="text-white font-bold">${legDist}km</span> <span class="text-[#00f0ff] font-bold">(${cumulDist}km)</span></div>
+                    <div>${isActive ? 'Remaining:' : 'Road Dist:'} <span class="${isActive ? 'text-[#00f0ff] font-extrabold' : 'text-white font-bold'}">${isActive ? liveRemKm : legDist}km</span> ${isActive ? `<span class="text-slate-500">(${legDist}km plan)</span>` : `<span class="text-[#00f0ff]">(${cumulDist}km)</span>`}</div>
                     <div>Fuel: <span class="text-white font-bold">${legFuel}L</span> <span class="text-amber-400 font-bold">(${cumulFuel}L)</span></div>
                 </div>
-                ${!isCompleted ? `
+                ${(!isCompleted && !isBlocked) ? `
                 <button onclick="advanceDriverLeg(${driver.id})" class="route-advance-btn mt-1.5">
                     <i class="fa-solid fa-check"></i> Mark Reached & Cleared
                 </button>
@@ -2427,7 +2599,7 @@ function renderTacticalMasterMapLayers() {
             if (state.multiNodeSelectionMode) return;
             if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
             else if (e && e.stopPropagation) e.stopPropagation();
-            openRouteInfoPanel(driver);
+            handleRouteSegmentClick(driver, e ? e.latlng : null, e, state.tacticalMasterMap);
         };
 
         const onRouteDblClick = (e) => {
@@ -3744,26 +3916,113 @@ async function resolveCrashSOS() {
 }
 
 // ==========================================
-// 9. ROUTE OBSTRUCTION & QUANTUM DETOUR (SPEC 4)
+// 9. ROUTE OBSTRUCTION & QUANTUM DETOUR (SPEC 4 & CLICK-TO-REPORT CLOSED ROAD)
 // ==========================================
-async function triggerRouteClosedFromDriver(driverId) {
-    if (state.user && state.user.role === 'OFFICER') {
-        showBroadcastToast('⚠️ Driver Control Restricted: Road closures can only be submitted by deployed vehicle drivers.');
-        return;
+
+/**
+ * Handle Route Segment Click (Requirement 3)
+ * Snaps click coordinate to underlying road network edge, identifies road name,
+ * and presents contextual Route Closed action and route telemetry.
+ */
+function handleRouteSegmentClick(driver, clickLatLng, event, map) {
+    if (!driver) return;
+    audioEngine.playBeep(780, 0.08);
+
+    const targetMap = map || state.tacticalMasterMap || state.driverMap || state.fullMap;
+    const clickCoords = (clickLatLng && clickLatLng.lat !== undefined)
+        ? [clickLatLng.lat, clickLatLng.lng]
+        : (Array.isArray(clickLatLng) ? clickLatLng : (driver.currentPos || [16.5062, 80.6120]));
+
+    // Snap to real road network edge in Vijayawada
+    let nearestEdge = null;
+    if (typeof findNearestRoadEdge === 'function') {
+        nearestEdge = findNearestRoadEdge(clickCoords, 1.2);
     }
-    const id = driverId || state.selectedDriverId || (state.fleet[0] ? state.fleet[0].id : 1);
+
+    if (!nearestEdge && typeof findNearestRoadEdge === 'function' && driver.currentPos) {
+        nearestEdge = findNearestRoadEdge(driver.currentPos, 1.5);
+    }
+
+    const roadName = nearestEdge ? nearestEdge.name : 'Prakasam Barrage Deck (BARRAGE_NORTH ↔ BARRAGE_APPROACH_N)';
+    const edgeTuple = nearestEdge ? nearestEdge.edge : ['BARRAGE_NORTH', 'BARRAGE_APPROACH_N'];
+
+    const selectedSegment = {
+        driverId: driver.id,
+        driverName: driver.name,
+        edge: edgeTuple,
+        name: roadName,
+        latlng: (clickLatLng && clickLatLng.lat !== undefined) ? clickLatLng : { lat: clickCoords[0], lng: clickCoords[1] }
+    };
+    state.selectedRoadSegment = selectedSegment;
+
+    // Update Route Info modal segment box in case user opens panel
+    const segNameEl = document.getElementById('route-info-segment-name');
+    if (segNameEl) segNameEl.innerText = roadName;
+
+    // Open contextual action popup on map at clicked coordinates
+    if (targetMap && typeof targetMap.openPopup === 'function' && selectedSegment.latlng) {
+        const popupContent = `
+            <div class="tactical-popup p-2.5 text-xs font-sans min-w-[220px]">
+                <div class="flex items-center justify-between pb-1.5 mb-1.5 border-b border-slate-700">
+                    <span class="font-extrabold text-amber-400 flex items-center gap-1.5 truncate">
+                        <i class="fa-solid fa-road"></i>
+                        <span class="truncate">${roadName}</span>
+                    </span>
+                    <span class="text-[8px] px-1.5 py-0.2 rounded font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">ROAD SEGMENT</span>
+                </div>
+                <p class="text-[10px] text-white">Assigned: Unit #${driver.id} (${driver.name})</p>
+                <p class="text-[9px] text-slate-300 mt-0.5">Active Target: ${driver.node}</p>
+                <div class="mt-2 space-y-1.5">
+                    <button onclick="confirmAndBlockRouteSegment(${driver.id})" class="w-full py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-[10px] font-bold flex items-center justify-center gap-1.5 shadow transition">
+                        <i class="fa-solid fa-road-barrier"></i> Route Closed
+                    </button>
+                    <button onclick="openRouteInfoPanel(state.fleet.find(d => d.id === ${driver.id}), state.selectedRoadSegment)" class="w-full py-1 bg-[#161b22] hover:bg-[#21262d] text-slate-300 border border-[#30363d] rounded text-[9px] font-bold flex items-center justify-center gap-1.5 transition">
+                        <i class="fa-solid fa-route text-[#00f0ff]"></i> Open Route Telemetry
+                    </button>
+                </div>
+            </div>
+        `;
+        L.popup({ offset: [0, -10], closeButton: true })
+            .setLatLng([selectedSegment.latlng.lat, selectedSegment.latlng.lng])
+            .setContent(popupContent)
+            .openOn(targetMap);
+    } else {
+        openRouteInfoPanel(driver, selectedSegment);
+    }
+}
+
+/**
+ * Confirm and Block Route Segment (Requirement 3)
+ * Prompts "Report [Road Name] closed?", marks edge blocked, reroutes driver from LIVE GPS
+ * to the SAME destination, preserves sequence order strictly without reordering/skipping.
+ */
+async function confirmAndBlockRouteSegment(driverId) {
+    const id = driverId || state.selectedRoadSegment?.driverId || state.selectedDriverId || (state.fleet[0] ? state.fleet[0].id : 1);
     const driver = state.fleet.find(d => d.id === id) || state.fleet[0];
     if (!driver) return;
 
-    const requestVersion = Date.now();
-    driver.routeVersion = requestVersion;
+    const segment = state.selectedRoadSegment || (typeof findNearestRoadEdge === 'function' ? findNearestRoadEdge(driver.currentPos, 1.5) : null);
+    const segmentName = segment ? (segment.name || (segment.edge ? formatRoadEdgeName(segment.edge[0], segment.edge[1]) : 'Prakasam Barrage Deck')) : 'Prakasam Barrage Deck';
+    const edge = segment ? (segment.edge || ['BARRAGE_NORTH', 'BARRAGE_APPROACH_N']) : ['BARRAGE_NORTH', 'BARRAGE_APPROACH_N'];
+
+    // Confirmation Prompt
+    const confirmed = confirm(`Report ${segmentName} closed?`);
+    if (!confirmed) return;
 
     audioEngine.playBeep(440, 0.25);
     driver.isObstructed = true;
 
-    // Quantum detour recalculation
+    // Record blocked edge on driver
+    driver.blockedEdges = driver.blockedEdges || [];
+    const edgeExists = driver.blockedEdges.some(e => (e[0] === edge[0] && e[1] === edge[1]) || (e[0] === edge[1] && e[1] === edge[0]));
+    if (!edgeExists) {
+        driver.blockedEdges.push(edge);
+    }
+
+    // Recalculate route strictly from LIVE GPS position to SAME destination
+    // optimizeTSP is set to FALSE to preserve sequence order strictly
     if (driver.routeSequence && driver.routeSequence.length > 1) {
-        const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true);
+        const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, true, false, driver.blockedEdges);
         driver.polyline = multiResult.fullPolyline;
         driver.legs = multiResult.legs;
         driver.totalDistanceKm = multiResult.totalDistanceKm;
@@ -3771,8 +4030,10 @@ async function triggerRouteClosedFromDriver(driverId) {
         driver.totalEtaMinutes = multiResult.totalEtaMinutes;
         driver.roadColor = multiResult.roadColor;
     } else {
-        const reroute = quantumEngine.solveOptimalRoute(driver.currentPos, driver.targetPos, true);
+        const reroute = quantumEngine.solveOptimalRoute(driver.currentPos, driver.targetPos, true, driver.blockedEdges);
         driver.polyline = reroute.path;
+        driver.totalDistanceKm = reroute.distanceKm;
+        driver.totalFuelBurnLiters = reroute.quantumFuelLiters;
     }
     driver.fuel += 2.0;
     driver.lastUpdated = new Date().toISOString();
@@ -3780,38 +4041,66 @@ async function triggerRouteClosedFromDriver(driverId) {
     await offlineStore.updateDriver(driver);
     await offlineStore.saveFleet(state.fleet);
 
+    // Close any open popups or modals
+    if (state.tacticalMasterMap) state.tacticalMasterMap.closePopup();
+    if (state.driverMap) state.driverMap.closePopup();
+    if (state.fullMap) state.fullMap.closePopup();
+    closeModal('route-info-modal');
+
+    // Send to backend obstruction endpoint
     if (state.wsConnected && !state.simulatedOffline) {
         try {
-            await fetch(`${CONFIG.API_URL}/fleet/${driver.id}/obstruction`, { method: 'POST' });
+            await fetch(`${CONFIG.API_URL}/fleet/${driver.id}/obstruction`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    blockedEdge: edge,
+                    segmentName,
+                    role: state.user?.role || 'DRIVER',
+                    isDriverSimulation: true
+                })
+            });
         } catch (e) {
             console.warn('Backend obstruction notification fallback:', e);
-            await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id });
+            await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id, blockedEdge: edge, segmentName });
         }
     } else {
-        await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id });
+        await offlineStore.queueOfflineAction({ type: 'ROUTE_OBSTRUCTION', driverId: driver.id, blockedEdge: edge, segmentName });
     }
 
-    // Update UI components
+    // Refresh UI
     updateDriverCardUI(driver);
     updateMiniMapPolyline(driver.id);
     renderTacticalMasterMapLayers();
-    if (state.fullMap && state.selectedDriverId === driver.id) {
-        expandDriverMap(driver.id);
+    if (state.selectedDriverId === driver.id) {
+        populateExpandedSidebar(driver);
+        renderDriverSequenceMarkers(driver);
+        updateDriverNavigationHUD(driver);
+        renderDriverLegsList(driver);
     }
     if (state.user && state.user.role === 'DRIVER') {
         initDriverInterface(driver);
     }
+    updateTurnByTurnNavBanner(driver);
 
     // Audio & Toast Alert
-    audioEngine.triggerCommandAudioBroadcast(`Tactical corridor blocked for Operative ${driver.name}! Quantum detour tunneling initiated.`);
-    showBroadcastToast(`⚠️ Route Closed: Operative ${driver.name} reported blockade. Red detour engaged.`);
+    audioEngine.triggerCommandAudioBroadcast(`Tactical corridor closed for Operative ${driver.name}. Detour engaged around ${segmentName}.`);
+    showBroadcastToast(`⚠️ Route Closed: ${segmentName} reported closed. Quantum detour engaged.`);
 
     const cueEl = document.getElementById('drv-nav-cue');
     if (cueEl) cueEl.innerText = "DETOUR ENGAGED: Corridor Obstructed - Quantum Bypassing Active";
 }
 
+function triggerRouteBlockForSelectedSegment() {
+    confirmAndBlockRouteSegment(state.selectedRoadSegment?.driverId || state.selectedDriverId);
+}
+
+async function triggerRouteClosedFromDriver(driverId) {
+    await confirmAndBlockRouteSegment(driverId);
+}
+
 async function triggerRouteBlock() {
-    await triggerRouteClosedFromDriver(state.selectedDriverId);
+    await confirmAndBlockRouteSegment(state.selectedDriverId);
 }
 
 async function clearDriverObstruction(driverId) {
@@ -3821,10 +4110,11 @@ async function clearDriverObstruction(driverId) {
 
     audioEngine.playBeep(780, 0.15);
     driver.isObstructed = false;
+    driver.blockedEdges = [];
 
     // Normal quantum road route restoration
     if (driver.routeSequence && driver.routeSequence.length > 1) {
-        const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false);
+        const multiResult = quantumEngine.solveQuantumMultiNodeRoute(driver.currentPos, driver.routeSequence, false, false, []);
         driver.polyline = multiResult.fullPolyline;
         driver.legs = multiResult.legs;
         driver.totalDistanceKm = multiResult.totalDistanceKm;
@@ -3832,8 +4122,10 @@ async function clearDriverObstruction(driverId) {
         driver.totalEtaMinutes = multiResult.totalEtaMinutes;
         driver.roadColor = multiResult.roadColor;
     } else {
-        const reroute = quantumEngine.solveOptimalRoute(driver.currentPos, driver.targetPos, false);
+        const reroute = quantumEngine.solveOptimalRoute(driver.currentPos, driver.targetPos, false, []);
         driver.polyline = reroute.path;
+        driver.totalDistanceKm = reroute.distanceKm;
+        driver.totalFuelBurnLiters = reroute.quantumFuelLiters;
     }
     driver.lastUpdated = new Date().toISOString();
 
@@ -4022,7 +4314,7 @@ function initDriverInterface(driver) {
         const onDriverRouteClick = (e) => {
             if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
             else if (e && e.stopPropagation) e.stopPropagation();
-            openRouteInfoPanel(driver);
+            handleRouteSegmentClick(driver, e ? e.latlng : null, e, state.driverMap);
         };
 
         if (!state.driverMap) {
@@ -4501,6 +4793,9 @@ window.computeTurnByTurnInstructions = computeTurnByTurnInstructions;
 window.updateTurnByTurnNavBanner = updateTurnByTurnNavBanner;
 window.startDriverTelemetryStream = startDriverTelemetryStream;
 window.openRouteInfoPanel = openRouteInfoPanel;
+window.handleRouteSegmentClick = handleRouteSegmentClick;
+window.confirmAndBlockRouteSegment = confirmAndBlockRouteSegment;
+window.triggerRouteBlockForSelectedSegment = triggerRouteBlockForSelectedSegment;
 window.openDestinationInfoModal = openDestinationInfoModal;
 window.submitDestinationUnreachableReport = submitDestinationUnreachableReport;
 window.fetchAndRenderOfficerAlerts = fetchAndRenderOfficerAlerts;

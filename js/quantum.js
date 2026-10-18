@@ -337,9 +337,10 @@ function calculateRoadRouteSync(startNode, endNode, options = {}) {
     return calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion);
 }
 
-function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false) {
-    const route = calculateRoadRouteSync(startCoord, endCoord, { isBlocked });
-    if (route && route.geometry && route.geometry.length >= 2) {
+function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false, blockedEdges = []) {
+    const hasBlocked = isBlocked || (blockedEdges && Array.isArray(blockedEdges) && blockedEdges.length > 0);
+    const route = calculateRoadRouteSync(startCoord, endCoord, { isBlocked: hasBlocked });
+    if (!hasBlocked && route && route.geometry && route.geometry.length >= 2) {
         return route.geometry;
     }
     const roadSnapFn = (typeof getRoadSnappedPath === 'function') 
@@ -350,15 +351,20 @@ function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false) {
                 ? global.getRoadSnappedPath
                 : null));
     if (roadSnapFn) {
-        const path = roadSnapFn(startCoord, endCoord, isBlocked);
+        const path = roadSnapFn(startCoord, endCoord, hasBlocked, blockedEdges);
         if (path && path.length >= 2) return path;
+        if (hasBlocked && path === null) return null;
     }
     if (typeof require === 'function') {
         try {
             const cfg = require('./config.js');
-            const path = cfg.getRoadSnappedPath(startCoord, endCoord, isBlocked);
+            const path = cfg.getRoadSnappedPath(startCoord, endCoord, hasBlocked, blockedEdges);
             if (path && path.length >= 2) return path;
+            if (hasBlocked && path === null) return null;
         } catch (e) {}
+    }
+    if (hasBlocked && blockedEdges && blockedEdges.length > 0) {
+        return null;
     }
     const sSouth = checkIsSouth(startCoord);
     const eSouth = checkIsSouth(endCoord);
@@ -385,7 +391,7 @@ function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false) {
             : null);
 
     if (findPathFn) {
-        const gPath = findPathFn(sKey, eKey, null, isBlocked);
+        const gPath = findPathFn(sKey, eKey, null, isBlocked, blockedEdges);
         if (gPath && gPath.length >= 2) {
             const assembled = [startCoord];
             for (const pt of gPath) {
@@ -451,12 +457,12 @@ class QuantumRoutingEngine {
     /**
      * Solve single route vector with quantum detour tunneling & road snapping
      */
-    solveOptimalRoute(startCoord, endCoord, isBlocked = false) {
+    solveOptimalRoute(startCoord, endCoord, isBlocked = false, blockedEdges = []) {
         const [startLat, startLng] = startCoord;
         const [endLat, endLng] = endCoord;
 
         // Use strictly road-snapped vector (zero straight-line water cutting)
-        const path = resolveRoadSnappedVector([startLat, startLng], [endLat, endLng], isBlocked);
+        const path = resolveRoadSnappedVector([startLat, startLng], [endLat, endLng], isBlocked, blockedEdges);
 
         // Calculate actual path distance in km
         let pathDistKm = 0;
@@ -638,7 +644,7 @@ class QuantumRoutingEngine {
     /**
      * Solve multi-node sequential tour with dynamic weather coloring and ETA/Fuel metrics
      */
-    solveQuantumMultiNodeRoute(startCoord, routeSequence = [], isBlocked = false, optimizeTSP = true) {
+    solveQuantumMultiNodeRoute(startCoord, routeSequence = [], isBlocked = false, optimizeTSP = true, blockedEdges = []) {
         if (!routeSequence || routeSequence.length === 0) {
             return {
                 fullPolyline: [startCoord],
@@ -675,8 +681,9 @@ class QuantumRoutingEngine {
             };
         }
 
+        // When a road obstruction is reported, strictly PRESERVE the approved sequential order (Spec 5 & Spec 7)
         let activePending = pendingStops;
-        if (optimizeTSP && pendingStops.length > 1) {
+        if (optimizeTSP && !isBlocked && (!blockedEdges || blockedEdges.length === 0) && pendingStops.length > 1) {
             activePending = this.solveQuantumTSP(startCoord, pendingStops, isBlocked);
         }
 
@@ -694,7 +701,7 @@ class QuantumRoutingEngine {
         let totalEtaMinutes = 0;
         let totalFuelBurnLiters = 0;
         let totalCarbonSavedKg = 0;
-        let worstColor = '#10b981';
+        let worstColor = isBlocked ? '#ef4444' : '#10b981';
 
         // 1. Preserve existing completed stops in legs list without routing backward
         completedStops.forEach((stop, cIdx) => {
@@ -747,8 +754,38 @@ class QuantumRoutingEngine {
                 if (worstColor !== '#ef4444') worstColor = '#f59e0b';
             }
 
-            // Road snapped leg path (strictly clamped to roads and land bridges)
-            const legPath = resolveRoadSnappedVector(current, dest, hasSevereFlood);
+            // Road snapped leg path (strictly clamped to roads and land bridges, excluding blocked edges)
+            const legPath = resolveRoadSnappedVector(current, dest, hasSevereFlood, blockedEdges);
+
+            if (!legPath || legPath.length < 2) {
+                legs.push({
+                    seq: stop.seq || (idx + 1),
+                    targetNodeId: stop.id || stop.nodeId,
+                    targetNodeName: stop.name,
+                    from: idx === 0 ? "Driver Live Position" : activePending[idx - 1].name,
+                    to: stop.name,
+                    lat: stop.lat,
+                    lng: stop.lng,
+                    demand: stop.demand || 50,
+                    supplyType: stop.supplyType || 'Relief Supplies',
+                    status: "BLOCKED",
+                    distanceKm: 0,
+                    cumulativeDistanceKm: Number(totalDistanceKm.toFixed(2)),
+                    etaMinutes: 0,
+                    cumulativeEtaMinutes: Number(totalEtaMinutes.toFixed(1)),
+                    fuelBurnLiters: 0,
+                    cumulativeFuelBurnLiters: Number(totalFuelBurnLiters.toFixed(2)),
+                    carbonSavedKg: 0,
+                    speedKmh: 0,
+                    hazardStatus: "Corridor Obstructed - No Alternative Road Route",
+                    color: '#ef4444',
+                    path: [[stop.lat, stop.lng]],
+                    isUnreachable: true
+                });
+                worstColor = '#ef4444';
+                current = dest;
+                return;
+            }
 
             let legPathDist = 0;
             for (let i = 0; i < legPath.length - 1; i++) {
@@ -756,7 +793,7 @@ class QuantumRoutingEngine {
             }
 
             const legDistFactor = hasSevereFlood ? 1.30 : (hasStorm ? 1.15 : 1.05);
-            const legDist = Number((Math.max(1.2, legPathDist * legDistFactor)).toFixed(2));
+            const legDist = Number((Math.max(0.6, legPathDist * legDistFactor)).toFixed(2));
             const legEta = Number(((legDist / legSpeed) * 60).toFixed(1));
             const legFuel = Number((legDist * 0.138).toFixed(2));
             const legClassicalFuel = Number((legDist * 0.185).toFixed(2));
@@ -775,7 +812,7 @@ class QuantumRoutingEngine {
                 seq: stop.seq || (idx + 1),
                 targetNodeId: stop.id || stop.nodeId,
                 targetNodeName: stop.name,
-                from: idx === 0 ? "Current Vehicle Position" : activePending[idx - 1].name,
+                from: idx === 0 ? "Driver Live Position" : activePending[idx - 1].name,
                 to: stop.name,
                 lat: stop.lat,
                 lng: stop.lng,
