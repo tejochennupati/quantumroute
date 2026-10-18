@@ -16,8 +16,8 @@ const CONFIG = {
     GROUND_STATE_ENERGY_EV: -29.04, // Qiskit QAOA ground-state Hamiltonian energy
     GATE_FIDELITY: 99.85,
     ACTIVE_QUBITS: 32,
-    WS_URL: (typeof window !== 'undefined' && window.location) ? ((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + (window.location.host || 'localhost:3000')) : 'ws://localhost:3000',
-    API_URL: (typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin.includes('http')) ? window.location.origin + '/api' : 'http://localhost:3000/api',
+    WS_URL: (typeof window !== 'undefined' && window.QUANTUM_WS_URL) ? window.QUANTUM_WS_URL : ((typeof window !== 'undefined' && window.location) ? ((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + (window.location.host || 'localhost:3000')) : 'ws://localhost:3000'),
+    API_URL: (typeof window !== 'undefined' && window.QUANTUM_API_URL) ? window.QUANTUM_API_URL : ((typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin.includes('http')) ? window.location.origin + '/api' : 'http://localhost:3000/api'),
     DEPOT_HUBS: [
         { code: 'HUB-VIJ-01', name: 'Krishna Central Depot (Prakasam Barrage)', lat: 16.5062, lng: 80.6120, capacity: 5000 },
         { code: 'HUB-BENZ-02', name: 'Benz Circle Logistics Staging', lat: 16.5019, lng: 80.6704, capacity: 3500 },

@@ -824,7 +824,7 @@ function broadcast(message) {
 // ==========================================
 
 // Health Check with QPU Telemetry
-app.get('/api/health', (req, res) => {
+app.get(['/api', '/api/health'], (req, res) => {
     res.json({
         status: 'ONLINE',
         system: 'QuantumRoute 10-Node QAOA Command Grid',
@@ -2326,7 +2326,7 @@ wss.on('connection', (ws) => {
 });
 
 // Automated Continuous Vehicle Sensor Telemetry & Motion Streaming Loop (Spec 1 & Spec 3)
-setInterval(() => {
+const telemetryInterval = setInterval(() => {
     fleet.forEach(d => {
         try {
             if (!d.isRescue && !d.crashSensor?.isCrashed && Array.isArray(d.currentPos) && d.currentPos.length >= 2) {
@@ -2369,13 +2369,23 @@ setInterval(() => {
         }
     });
 }, 2500);
+if (telemetryInterval.unref) telemetryInterval.unref();
 
-// Start Server
-server.listen(PORT, () => {
-    console.log(`====================================================`);
-    console.log(`⚡ QUANTUMROUTE 10-NODE QAOA COMMAND SERVER RUNNING`);
-    console.log(`📡 URL: http://localhost:${PORT}`);
-    console.log(`👮 Authorized Officer: ${OFFICER_NAME} (${GOV_OFFICER_ID})`);
-    console.log(`⚛️ QPU: ONLINE (32 Qubits, Fidelity: 99.85%, E = ${GROUND_STATE_ENERGY_EV} eV)`);
-    console.log(`====================================================`);
-});
+// Start Server if executed directly
+if (require.main === module) {
+    server.listen(PORT, () => {
+        console.log(`====================================================`);
+        console.log(`⚡ QUANTUMROUTE 10-NODE QAOA COMMAND SERVER RUNNING`);
+        console.log(`📡 URL: http://localhost:${PORT}`);
+        console.log(`👮 Authorized Officer: ${OFFICER_NAME} (${GOV_OFFICER_ID})`);
+        console.log(`⚛️ QPU: ONLINE (32 Qubits, Fidelity: 99.85%, E = ${GROUND_STATE_ENERGY_EV} eV)`);
+        console.log(`====================================================`);
+    });
+}
+
+module.exports = {
+    app,
+    server,
+    resetFleet,
+    generateInitialFleet
+};
