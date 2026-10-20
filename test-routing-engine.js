@@ -84,7 +84,85 @@ async function runRoutingTests() {
     assert(isOfficerBlocked, 'Test I: Officer role must be prevented from submitting driver road closure');
     console.log(`[PASS] Test I: Driver-only road closure rule verified (Officer restricted: ${isOfficerBlocked})`);
 
-    console.log('\n🌟 ALL PHASE 11 TESTS PASSED WITH 100% SUCCESS!\n');
+    // Test J: Intra-Neighborhood Route Street Curvature (Deviation from chord > 0.05 km)
+    console.log('\n--- Test J: Intra-Neighborhood Street Curvature ---');
+    const routeJ = calculateRoadRouteSync([16.5085, 80.6150], [16.5110, 80.6070]);
+    assert.strictEqual(routeJ.status, 'success', 'Test J: Status must be success');
+    assert(routeJ.geometry.length >= 15, `Test J: Expected >= 15 intermediate road vertices, got ${routeJ.geometry.length}`);
+    const sJ = routeJ.geometry[0];
+    const eJ = routeJ.geometry[routeJ.geometry.length - 1];
+    const dxJ = eJ[1] - sJ[1];
+    const dyJ = -(eJ[0] - sJ[0]);
+    const normJ = Math.hypot(dxJ, dyJ);
+    let maxDeviationKm = 0;
+    for (const pt of routeJ.geometry) {
+        const distKm = (Math.abs(dyJ * (pt[1] - sJ[1]) - dxJ * (pt[0] - sJ[0])) / normJ) * 111.0;
+        if (distKm > maxDeviationKm) maxDeviationKm = distKm;
+    }
+    assert(maxDeviationKm > 0.05, `Test J: Intermediate points must deviate > 0.05 km from direct chord (street-following check). Got ${maxDeviationKm.toFixed(3)} km`);
+    console.log(`[PASS] Test J: Intra-neighborhood street-following verified (${routeJ.geometry.length} vertices, max chord deviation: ${maxDeviationKm.toFixed(3)} km > 0.05 km)`);
+
+    // Test K: Off-Graph Origin Orthogonal Road Projection
+    console.log('\n--- Test K: Off-Graph Origin Orthogonal Projection ---');
+    const offGraphOrigin = [16.5050, 80.6400]; // Inside urban residential block south of Governorpet
+    const routeK = calculateRoadRouteSync(offGraphOrigin, [16.5019, 80.6704]);
+    assert.strictEqual(routeK.status, 'success', 'Test K: Status must be success');
+    assert(routeK.geometry.length >= 20, `Test K: Expected detailed route, got ${routeK.geometry.length} vertices`);
+    assert.deepStrictEqual(routeK.geometry[0], offGraphOrigin, 'Test K: Route must start at actual origin');
+    const firstProjectedStep = routeK.geometry[1];
+    const distToFirstStepKm = Math.hypot(firstProjectedStep[0] - offGraphOrigin[0], firstProjectedStep[1] - offGraphOrigin[1]) * 111.0;
+    // Nearest junction node is GOVERNORPET at ~1.13 km away; orthogonal edge projection is ~0.058 km away
+    assert(distToFirstStepKm < 0.15, `Test K: Route must begin with perpendicular projection to nearest street (<0.15 km), not jump to distant junction node. Got ${distToFirstStepKm.toFixed(3)} km`);
+    console.log(`[PASS] Test K: Off-graph origin projected perpendicularly onto road edge (${distToFirstStepKm.toFixed(3)} km to edge vs 1.13 km to nearest node)`);
+
+    // Test L: Same Street Segment Bidirectional Routing
+    console.log('\n--- Test L: Same Street Segment Bidirectional Routing ---');
+    const ptL1 = [16.5070, 80.6150];
+    const ptL2 = [16.5045, 80.6110];
+    const routeL_Fwd = calculateRoadRouteSync(ptL1, ptL2);
+    const routeL_Rev = calculateRoadRouteSync(ptL2, ptL1);
+    assert.strictEqual(routeL_Fwd.status, 'success', 'Test L (Fwd): Status must be success');
+    assert.strictEqual(routeL_Rev.status, 'success', 'Test L (Rev): Status must be success');
+    assert(routeL_Fwd.geometry.length > 5, `Test L (Fwd): Should contain intermediate segment points (got ${routeL_Fwd.geometry.length})`);
+    assert(routeL_Rev.geometry.length > 5, `Test L (Rev): Should contain intermediate segment points (got ${routeL_Rev.geometry.length})`);
+    assert(Math.abs(routeL_Fwd.distanceKm - routeL_Rev.distanceKm) < 0.15, `Test L: Bidirectional road distances should match (${routeL_Fwd.distanceKm} km vs ${routeL_Rev.distanceKm} km)`);
+    console.log(`[PASS] Test L: Same-segment bidirectional routing follows edge curvature (Fwd: ${routeL_Fwd.geometry.length} pts, ${routeL_Fwd.distanceKm} km; Rev: ${routeL_Rev.geometry.length} pts, ${routeL_Rev.distanceKm} km)`);
+
+    // Test M: Unreachable Destination Explicit Failure (Zero Straight Lines)
+    console.log('\n--- Test M: Unreachable Destination Explicit Failure ---');
+    // M1: Water body unreachable
+    const routeM_Water = calculateRoadRouteSync([16.5019, 80.6704], [16.5100, 80.5900]);
+    assert.strictEqual(routeM_Water.status, 'error', 'Test M1: Unreachable water destination must return error status');
+    assert.strictEqual(routeM_Water.geometry.length, 0, 'Test M1: Unreachable destination must return 0 geometry vertices (NEVER a straight fallback line)');
+    // M2: All river bridges blocked
+    const routeM_Blocked = calculateRoadRouteSync(
+        [16.5019, 80.6704],
+        [16.4850, 80.6020],
+        { blockedEdges: [['BARRAGE_NORTH', 'BARRAGE_APPROACH_N'], ['VARADHI_NORTH', 'VARADHI_APPROACH_N']] }
+    );
+    assert.strictEqual(routeM_Blocked.status, 'error', 'Test M2: All river crossings blocked must return error status');
+    assert.strictEqual(routeM_Blocked.geometry.length, 0, 'Test M2: Fully obstructed corridor must return 0 geometry vertices');
+    console.log(`[PASS] Test M: Unreachable locations explicitly fail with 0 vertices (zero synthetic straight lines)`);
+
+    // Test N: Coordinate Order and Finiteness Verification
+    console.log('\n--- Test N: Coordinate Order & Finiteness Verification ---');
+    const allRoutesToAudit = [routeA, routeB, routeC, routeD, routeE, routeJ, routeK, routeL_Fwd, routeL_Rev];
+    let totalAuditVertices = 0;
+    allRoutesToAudit.forEach((r, rIdx) => {
+        assert(Array.isArray(r.geometry), `Route ${rIdx} geometry must be an array`);
+        r.geometry.forEach((pt, pIdx) => {
+            totalAuditVertices++;
+            assert(Array.isArray(pt) && pt.length >= 2, `Vertex [${rIdx}][${pIdx}] must be [lat, lng] array`);
+            assert(Number.isFinite(pt[0]), `Vertex [${rIdx}][${pIdx}] lat must be finite, got ${pt[0]}`);
+            assert(Number.isFinite(pt[1]), `Vertex [${rIdx}][${pIdx}] lng must be finite, got ${pt[1]}`);
+            // Strict Vijayawada geographic bounding box verification: [lat ~ 16.3..16.7, lng ~ 80.4..80.9]
+            assert(pt[0] >= 16.30 && pt[0] <= 16.70, `Vertex [${rIdx}][${pIdx}] latitude ${pt[0]} out of Vijayawada range [16.30, 16.70] (coordinate swap check)`);
+            assert(pt[1] >= 80.40 && pt[1] <= 80.90, `Vertex [${rIdx}][${pIdx}] longitude ${pt[1]} out of Vijayawada range [80.40, 80.90] (coordinate swap check)`);
+        });
+    });
+    console.log(`[PASS] Test N: Audited ${totalAuditVertices} vertices across 9 routes: 100% valid [lat, lng] order, finite numbers, strictly within operational bounds`);
+
+    console.log('\n🌟 ALL ROUTING ENGINE TESTS (A THROUGH N) PASSED WITH 100% SUCCESS!\n');
 }
 
 runRoutingTests().catch(err => {

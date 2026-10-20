@@ -1567,7 +1567,7 @@ function splitRouteSegments(driver) {
         }
 
         driver.legs.forEach((leg, idx) => {
-            if (!leg.path || leg.path.length === 0) return;
+            if (!leg.path || leg.path.length < 2 || leg.status === 'BLOCKED' || leg.isUnreachable) return;
             if (leg.status === 'COMPLETED' || (activeIdx !== -1 && idx < activeIdx)) {
                 // Completed past segment (faded pastel)
                 if (completedCoords.length > 0) {
@@ -1622,7 +1622,7 @@ function splitRouteSegments(driver) {
     }
 
     if (completedCoords.length === 0 && activeCoords.length === 0 && upcomingCoords.length === 0) {
-        if (driver.polyline && driver.polyline.length > 0) {
+        if (driver.polyline && driver.polyline.length > 1) {
             const allCompleted = driver.routeSequence && driver.routeSequence.length > 0 && driver.routeSequence.every(s => s.status === 'COMPLETED');
             if (allCompleted) {
                 completedCoords.push(...driver.polyline);

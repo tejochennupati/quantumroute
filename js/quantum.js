@@ -144,7 +144,7 @@ async function queryOSRMRoute(startCoord, endCoord, bridgeRef, isBlocked, routeV
     };
 }
 
-function calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion) {
+function calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion, blockedEdges = []) {
     // Check bounds: Vijayawada emergency logistics sector
     const isOutOfBounds = (coord) => {
         return !coord || coord[0] < 16.30 || coord[0] > 16.70 || coord[1] < 80.40 || coord[1] > 80.90;
@@ -168,11 +168,11 @@ function calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, ro
                 : null));
 
     if (roadSnapFn) {
-        rawPath = roadSnapFn(startCoord, endCoord, isBlocked);
+        rawPath = roadSnapFn(startCoord, endCoord, isBlocked, blockedEdges);
     } else if (typeof require === 'function') {
         try {
             const cfg = require('./config.js');
-            rawPath = cfg.getRoadSnappedPath(startCoord, endCoord, isBlocked);
+            rawPath = cfg.getRoadSnappedPath(startCoord, endCoord, isBlocked, blockedEdges);
         } catch (e) {
             rawPath = null;
         }
@@ -296,7 +296,7 @@ async function calculateRoadRoute(startNode, endNode, options = {}) {
         }
     }
 
-    return calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion);
+    return calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion, options.blockedEdges || []);
 }
 
 function calculateRoadRouteSync(startNode, endNode, options = {}) {
@@ -334,15 +334,11 @@ function calculateRoadRouteSync(startNode, endNode, options = {}) {
         }
     }
 
-    return calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion);
+    return calculateLocalGraphRoute(startCoord, endCoord, bridgeRef, isBlocked, routeVersion, options.blockedEdges || []);
 }
 
 function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false, blockedEdges = []) {
     const hasBlocked = isBlocked || (blockedEdges && Array.isArray(blockedEdges) && blockedEdges.length > 0);
-    const route = calculateRoadRouteSync(startCoord, endCoord, { isBlocked: hasBlocked });
-    if (!hasBlocked && route && route.geometry && route.geometry.length >= 2) {
-        return route.geometry;
-    }
     const roadSnapFn = (typeof getRoadSnappedPath === 'function') 
         ? getRoadSnappedPath 
         : ((typeof window !== 'undefined' && typeof window.getRoadSnappedPath === 'function')
@@ -353,69 +349,17 @@ function resolveRoadSnappedVector(startCoord, endCoord, isBlocked = false, block
     if (roadSnapFn) {
         const path = roadSnapFn(startCoord, endCoord, hasBlocked, blockedEdges);
         if (path && path.length >= 2) return path;
-        if (hasBlocked && path === null) return null;
+        return null;
     }
     if (typeof require === 'function') {
         try {
             const cfg = require('./config.js');
             const path = cfg.getRoadSnappedPath(startCoord, endCoord, hasBlocked, blockedEdges);
             if (path && path.length >= 2) return path;
-            if (hasBlocked && path === null) return null;
+            return null;
         } catch (e) {}
     }
-    if (hasBlocked && blockedEdges && blockedEdges.length > 0) {
-        return null;
-    }
-    const sSouth = checkIsSouth(startCoord);
-    const eSouth = checkIsSouth(endCoord);
-    const findNodeFn = (typeof findNearestRoadNode === 'function')
-        ? findNearestRoadNode
-        : ((typeof window !== 'undefined' && typeof window.findNearestRoadNode === 'function')
-            ? window.findNearestRoadNode
-            : null);
-    const nodeDict = (typeof ROAD_NETWORK_NODES !== 'undefined')
-        ? ROAD_NETWORK_NODES
-        : ((typeof window !== 'undefined' && typeof window.ROAD_NETWORK_NODES !== 'undefined')
-            ? window.ROAD_NETWORK_NODES
-            : null);
-
-    const sKey = findNodeFn ? findNodeFn(startCoord, sSouth) : (sSouth ? 'TADEPALLI' : 'PNBS');
-    const eKey = findNodeFn ? findNodeFn(endCoord, eSouth) : (eSouth ? 'TADEPALLI' : 'PNBS');
-    const sPt = (nodeDict && nodeDict[sKey]) || startCoord;
-    const ePt = (nodeDict && nodeDict[eKey]) || endCoord;
-
-    const findPathFn = (typeof findShortestRoadGraphPath === 'function')
-        ? findShortestRoadGraphPath
-        : ((typeof window !== 'undefined' && typeof window.findShortestRoadGraphPath === 'function')
-            ? window.findShortestRoadGraphPath
-            : null);
-
-    if (findPathFn) {
-        const gPath = findPathFn(sKey, eKey, null, isBlocked, blockedEdges);
-        if (gPath && gPath.length >= 2) {
-            const assembled = [startCoord];
-            for (const pt of gPath) {
-                if (Math.hypot(pt[0] - assembled[assembled.length - 1][0], pt[1] - assembled[assembled.length - 1][1]) > 0.0003) {
-                    assembled.push(pt);
-                }
-            }
-            if (Math.hypot(endCoord[0] - assembled[assembled.length - 1][0], endCoord[1] - assembled[assembled.length - 1][1]) > 0.0003) {
-                assembled.push(endCoord);
-            }
-            return densifyCoords(assembled, 0.08);
-        }
-    }
-
-    if (sSouth !== eSouth) {
-        const barrageDeck = [
-            [16.5085, 80.6150], [16.5072, 80.6135], [16.5062, 80.6120],
-            [16.5015, 80.6085], [16.4970, 80.6050], [16.4850, 80.6020]
-        ];
-        const base = sSouth ? [startCoord, sPt, ...barrageDeck.slice().reverse(), ePt, endCoord] : [startCoord, sPt, ...barrageDeck, ePt, endCoord];
-        return densifyCoords(base, 0.08);
-    }
-
-    return densifyCoords([startCoord, sPt, ePt, endCoord], 0.08);
+    return null;
 }
 
 class QuantumRoutingEngine {
@@ -779,11 +723,10 @@ class QuantumRoutingEngine {
                     speedKmh: 0,
                     hazardStatus: "Corridor Obstructed - No Alternative Road Route",
                     color: '#ef4444',
-                    path: [[stop.lat, stop.lng]],
+                    path: [],
                     isUnreachable: true
                 });
                 worstColor = '#ef4444';
-                current = dest;
                 return;
             }
 
@@ -850,6 +793,7 @@ class QuantumRoutingEngine {
             totalCarbonEmittedKg,
             totalCarbonSavedKg,
             roadColor: worstColor,
+            status: legs.some(l => l.status === 'BLOCKED') ? 'BLOCKED' : (isBlocked ? 'OBSTRUCTED' : 'CLEAR'),
             groundStateEnergy: this.currentEnergy,
             qaoaLayers: this.qaoaLayers,
             activeQubits: this.activeQubits,

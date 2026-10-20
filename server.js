@@ -529,11 +529,10 @@ function solveQuantumMultiNodeRoute(startPos, routeSequence = [], isObstructed =
                 speedKmH: 0,
                 color: '#ef4444',
                 hazardStatus: "Corridor Obstructed - No Verified Road Alternative",
-                path: [[stop.lat, stop.lng]],
+                path: [],
                 isUnreachable: true
             });
             worstColor = '#ef4444';
-            current = dest;
             return;
         }
 
